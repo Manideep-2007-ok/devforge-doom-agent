@@ -24,8 +24,10 @@ class RewardWeights:
     new_cell: float = 0.05  # once per 64x64 map cell entered
     kill: float = 0.5
     damage: float = -0.01  # per health point lost
+    damage_low_extra: float = 1.0  # damage costs up to 2x when health is low: fight when healthy, back off when hurt
     heal: float = 0.01  # per health point gained (medkits, stimpacks): the mirror of `damage`
     death: float = -3.0
+    death_time: float = 2.0  # extra cost x fraction of time left: an early death costs more (like the judges' -20 x time left)
     timeout: float = -1.0
     step: float = -0.001
     wasted_shot: float = -0.02  # firing with no enemy in front (25 wasted shots = one kill)
@@ -81,8 +83,10 @@ class RewardTracker:
 
         dd = ps["damage_taken"] - self.damage
         if dd > 0:
-            r += w.damage * dd
-            p["damage"] += w.damage * dd
+            low = 1.0 - min(max(self.health, 0.0), 100.0) / 100.0  # 0 at full health, 1 near death
+            cost = w.damage * dd * (1.0 + w.damage_low_extra * low)
+            r += cost
+            p["damage"] += cost
         self.damage = ps["damage_taken"]
 
         # Health only goes up by picking something up, so this cannot be farmed. A medkit is worth
@@ -125,8 +129,10 @@ class RewardTracker:
                 p["exit"] += bonus
                 s["exit"] = 1
             elif ps["dead"]:
-                r += w.death
-                p["death"] += w.death
+                time_left = max(0.0, 1.0 - ps["tic"] / max(ps["episode_ticks"], 1))
+                cost = w.death - w.death_time * time_left
+                r += cost
+                p["death"] += cost
                 s["death"] = 1
             else:
                 r += w.timeout
