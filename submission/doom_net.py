@@ -11,7 +11,8 @@ Data flow for one decision:
     memory map (optional) --> MapEncoder (2D conv)          --/   (added in Run 2: see memory_map.py)
     camera (optional)     --> EyeEncoder (2D conv, 80x60)   --/   (added in Run 2: the exit pad is only visible in pixels)
 
-No screen pixels: the rays already say "wall ahead, door on the left", and training is far cheaper.
+Run 1 used no pixels (rays say "wall ahead, door on the left" and train fast). The submitted Run 2 brain
+adds the memory map and a small 80x60 camera view; its added layers start at zero, so Run 2 began as Run 1.
 A sequence passed to forward() without `done` must belong to one episode (memory is not reset inside it).
 """
 
