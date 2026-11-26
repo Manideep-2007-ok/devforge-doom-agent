@@ -15,6 +15,7 @@ Four tiers, matching the hidden test suite:
   t2 explore      4-8 rooms, normal doors, dead ends, exit far from start
   t3 key-door     key in a side area, locked door on the way to the exit
   t4 gauntlet     2 keys, 2 locked doors in a chain, more monsters, less ammo
+  t5 key school   small: key close to the start, locked door right after it (practice for t3/t4)
 
     .venv/bin/python training/mapgen.py --out maps/gen/train --per-tier 100 --seed 1
     .venv/bin/python training/mapgen.py --out maps/gen/heldout --per-tier 5 --seed 999 --check
@@ -49,7 +50,7 @@ ITEMS = {
     "bullet_box": 2048, "shotgun": 2001,
 }
 WALL_TEX = ["STARTAN2", "STARTAN3", "BROWN1", "BROWNGRN", "GRAY1", "GRAY4", "STONE2", "METAL1", "ICKWALL1"]
-TIER_TICKS = {1: 2100, 2: 3150, 3: 3675, 4: 4200}
+TIER_TICKS = {1: 2100, 2: 3150, 3: 3675, 4: 4200, 5: 2100}
 
 
 # ===================================================================== layout
@@ -247,7 +248,11 @@ def finish_layout(L: Layout, rng, tier: int, n_monsters: int, n_items: int, keys
         candidates = [p for p in area if L[p] == FLOOR and L.room_of(p) is not None and p != L.start]
         if not candidates:
             raise Retry("no room for the key")
-        key = pick_far(rng, area, candidates, 0.5)
+        if tier == 5:  # key school: the key is among the closest half of the tiles before the door
+            candidates.sort(key=lambda p: area[p])
+            key = rng.choice(candidates[: max(1, len(candidates) // 2)])
+        else:
+            key = pick_far(rng, area, candidates, 0.5)
         prev_area = set(L.reach(L.start, blocked[k:] + [door]))
         L[door] = color
         placed_keys.append((key, color))
@@ -272,7 +277,8 @@ def finish_layout(L: Layout, rng, tier: int, n_monsters: int, n_items: int, keys
     pool = {1: ["zombieman", "shotgunner", "imp", "demon"],
             2: ["zombieman", "shotgunner", "imp"],
             3: ["zombieman", "shotgunner", "imp", "demon", "chaingunner"],
-            4: ["zombieman", "shotgunner", "imp", "demon", "chaingunner", "lost_soul", "cacodemon"]}[tier]
+            4: ["zombieman", "shotgunner", "imp", "demon", "chaingunner", "lost_soul", "cacodemon"],
+            5: ["zombieman", "imp"]}[tier]
     for p in rng.sample(far, min(n_monsters, len(far))):
         L.things.append((p[0] + rng.uniform(0.3, 0.7), p[1] + rng.uniform(0.3, 0.7),
                          MONSTERS[rng.choice(pool)], rng.randrange(0, 360, 45)))
@@ -298,6 +304,10 @@ def make_layout(tier: int, rng: random.Random) -> tuple[Layout, dict]:
                 L = Layout(rng.randint(24, 34), rng.randint(24, 34))
                 carve_rooms(L, rng, rng.randint(4, 8))
                 n_mon, n_items, keys, door_p, loops = rng.randint(3, 8), rng.randint(3, 6), [1], 0.4, 0
+            elif tier == 5:
+                L = Layout(rng.randint(16, 24), rng.randint(16, 24))
+                carve_rooms(L, rng, rng.randint(3, 4), 3, 6)
+                n_mon, n_items, keys, door_p, loops = rng.randint(1, 3), rng.randint(3, 5), [1], 0.2, 0
             else:
                 L = Layout(rng.randint(30, 40), rng.randint(30, 40))
                 carve_rooms(L, rng, rng.randint(6, 10))
