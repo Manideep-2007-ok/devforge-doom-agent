@@ -23,6 +23,7 @@ class RewardWeights:
     new_cell: float = 0.05  # once per 64x64 map cell entered
     kill: float = 0.5
     damage: float = -0.01  # per health point lost
+    heal: float = 0.01  # per health point gained (medkits, stimpacks): the mirror of `damage`
     death: float = -3.0
     timeout: float = -1.0
     step: float = -0.001
@@ -41,9 +42,10 @@ class RewardTracker:
         self.opened: set[int] = set()
         self.kills = ps["kills"]
         self.damage = ps["damage_taken"]
+        self.health = ps["health"]
         self.keys = np.asarray(ps["keys"]).copy()
-        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0)
-        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0)
+        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0)
+        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0)
 
     def shot(self, obs: dict, fired: bool) -> float:
         """Small cost for pulling the trigger when no enemy is roughly straight ahead."""
@@ -81,6 +83,15 @@ class RewardTracker:
             r += w.damage * dd
             p["damage"] += w.damage * dd
         self.damage = ps["damage_taken"]
+
+        # Health only goes up by picking something up, so this cannot be farmed. A medkit is worth
+        # more when hurt (it restores more), which teaches "low health -> go to the medkit".
+        dh = ps["health"] - self.health
+        if dh > 0 and not ps["dead"]:
+            r += w.heal * dh
+            p["heal"] += w.heal * dh
+            s["healed"] += dh
+        self.health = ps["health"]
 
         keys = np.asarray(ps["keys"])
         new_keys = int(((keys > 0.5) & (self.keys < 0.5)).sum())
