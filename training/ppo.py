@@ -78,7 +78,14 @@ class Config:
 # ============================================================== maps
 def expand_maps(spec: str) -> list[tuple[str, str]]:
     out = []
-    for part in spec.split(","):
+    parts = []
+    for part in spec.split(","):  # "@file" reads more comma/newline-separated entries from a file
+        part = part.strip()
+        if part.startswith("@"):
+            parts += [x for x in Path(part[1:]).read_text().replace("\n", ",").split(",") if x.strip()]
+        else:
+            parts.append(part)
+    for part in parts:
         part = part.strip()
         path, _, mapname = part.partition(":")
         for p in sorted(glob.glob(path)):
