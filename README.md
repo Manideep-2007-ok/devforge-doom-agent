@@ -7,10 +7,10 @@ It fights, explores, picks up keycards, opens doors and looks for the exit.
 
 *Yugaantar 2026 · DevForge · Track 1*
 
-![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
-![PyTorch](https://img.shields.io/badge/PyTorch-own%20PPO-EE4C2C?logo=pytorch&logoColor=white)
-![ViZDoom](https://img.shields.io/badge/ViZDoom-1.3.3-8B0000)
-![No SB3](https://img.shields.io/badge/Stable--Baselines-not%20used-555555)
+![Python 3.13](assets/badges/python.svg)
+![PyTorch, own PPO](assets/badges/pytorch.svg)
+![ViZDoom 1.3.3](assets/badges/vizdoom.svg)
+![Stable-Baselines not used](assets/badges/no-sb3.svg)
 
 | 🧠 Weights | ⚡ Per decision | 🗺️ Held-out score | 📏 Limit per decision |
 |:---:|:---:|:---:|:---:|
