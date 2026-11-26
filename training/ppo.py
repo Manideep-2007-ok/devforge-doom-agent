@@ -79,6 +79,17 @@ def expand_maps(spec: str) -> list[tuple[str, str]]:
     return out
 
 
+def map_ticks(wad: str, default: int) -> int:
+    """Tick cap for a map: from its <name>.json (written by mapgen.py) if present, else the default."""
+    meta = Path(wad).with_suffix(".json")
+    if meta.exists():
+        try:
+            return int(json.loads(meta.read_text()).get("ticks", default))
+        except (ValueError, OSError):
+            pass
+    return default
+
+
 # ============================================================== workers (CPU game copies)
 def _strip(x: dict) -> dict:
     x = dict(x)
@@ -109,7 +120,7 @@ class _Slot:
         if key != self.key:
             if self.env is not None:
                 self.env.close()
-            self.env = make_env(key[0], key[1], episode_ticks=self.cfg.episode_ticks, render_buffers=False)
+            self.env = make_env(key[0], key[1], episode_ticks=map_ticks(key[0], self.cfg.episode_ticks), render_buffers=False)
             self.key = key
         obs, _ = self.env.reset(seed=self.rng.randrange(1 << 30))
         self.mirrored = self.rng.random() < self.cfg.mirror_prob
