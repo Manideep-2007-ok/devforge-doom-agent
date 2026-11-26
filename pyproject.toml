@@ -14,6 +14,9 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest>=8"]
+train = [
+    "tensorboard>=2.21.0",
+]
 
 [tool.uv.sources]
 doom-env = { path = "env", editable = true }

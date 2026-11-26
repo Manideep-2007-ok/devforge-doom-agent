@@ -222,3 +222,6 @@ _vizdoom.ini
 
 # Local validator / scorer artifacts
 *.lmp
+
+# training outputs (checkpoints, TensorBoard logs)
+runs/
