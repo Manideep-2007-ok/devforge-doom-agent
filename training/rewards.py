@@ -17,6 +17,7 @@ import numpy as np
 class RewardWeights:
     exit: float = 10.0
     exit_health_bonus: float = 2.0  # x health/100 on exit
+    exit_time_bonus: float = 2.0  # x fraction of time left on exit (the judges reward fast exits too)
     key: float = 3.0  # once per key
     locked_door: float = 3.0  # once per locked door opened
     door: float = 0.5  # once per normal door opened
@@ -118,7 +119,8 @@ class RewardTracker:
 
         if ps["finished"]:
             if ps["exit_reached"]:
-                bonus = w.exit + w.exit_health_bonus * max(ps["health"], 0.0) / 100.0
+                time_left = max(0.0, 1.0 - ps["tic"] / max(ps["episode_ticks"], 1))
+                bonus = w.exit + w.exit_health_bonus * max(ps["health"], 0.0) / 100.0 + w.exit_time_bonus * time_left
                 r += bonus
                 p["exit"] += bonus
                 s["exit"] = 1
