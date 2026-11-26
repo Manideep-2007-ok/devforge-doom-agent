@@ -31,12 +31,28 @@ SEED = 0
 class DoomAgent:
     def __init__(self, observation_space, action_space, device: str):
         torch.set_num_threads(1)
+        self.observation_space = observation_space
         self.device = torch.device(device)
         self.model = load_model(WEIGHTS_PATH, self.device)
         self.generator = torch.Generator()  # CPU, so choices repeat across devices
         self.strict = os.environ.get("DOOM_STRICT") == "1"
         self.errors = 0
-        self.reset()
+        self._warm_up()
+
+    def _warm_up(self) -> None:
+        """Make one throwaway decision during start-up (limit 60 s).
+
+        The first decision loads extra code (about 1.5 s, once over 10 s on a laptop), and the
+        first act() of a map is limited to 10 s. Paying that cost here keeps act() fast.
+        """
+        self.reset()  # the network needs its memory and previous action to exist
+        try:
+            self._choose(self.observation_space.sample())  # made-up input of the right shape
+        except Exception:
+            if self.strict:
+                raise
+            traceback.print_exc(file=sys.stderr)
+        self.reset()  # forget the made-up input
 
     def reset(self) -> None:
         """Called before every map: forget everything from the previous one."""
