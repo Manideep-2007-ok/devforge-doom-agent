@@ -57,3 +57,27 @@ if __name__ == "__main__":
     files = [f for g in sys.argv[1:] for f in sorted(glob.glob(g))]
     found = sum(exit_point(f) is not None for f in files)
     print(f"exit found in {found} of {len(files)} maps; example {files[0]}: {exit_point(files[0])}")
+
+
+# key flags (vitals order): 0 BlueCard, 1 YellowCard, 2 RedCard, 3 BlueSkull, 4 YellowSkull, 5 RedSkull
+LOCK_KEYS = {1: (2,), 2: (0,), 3: (1,), 4: (5,), 5: (3,), 6: (4,),  # ZDoom lock numbers
+             129: (2, 5), 130: (0, 3), 131: (1, 4)}  # "any red / blue / yellow key"
+
+
+@lru_cache(maxsize=None)
+def locked_doors(wad: str, map_name: str = "MAP01") -> tuple[tuple[int, float, float, tuple], ...]:
+    """(sector, x, y, keys) of every locked door: centre of its boundary lines and the key flags that
+    open it (training reward only)."""
+    from doom_env.mapinfo import load_mapinfo
+    try:
+        info = load_mapinfo(wad, map_name)
+    except Exception:
+        return ()
+    segs = info.sector_lines()
+    out = []
+    for sec, lock in info.door_sectors.items():
+        if lock > 0 and sec in segs:
+            s = segs[sec]
+            out.append((int(sec), float((s[:, 0] + s[:, 2]).mean() / 2), float((s[:, 1] + s[:, 3]).mean() / 2),
+                        LOCK_KEYS.get(int(lock), tuple(range(6)))))
+    return tuple(out)

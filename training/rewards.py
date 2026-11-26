@@ -40,6 +40,8 @@ class RewardWeights:
     close_range: float = 128.0
     exit_pull: float = 0.004  # per map unit closer to the exit, within exit_radius (training-only knowledge)
     exit_radius: float = 512.0
+    door_pull: float = 0.001  # with a key in hand: per map unit closer to the nearest unopened locked door
+    door_radius: float = 2048.0
 
 
 @dataclass
@@ -48,6 +50,7 @@ class RewardTracker:
 
     w: RewardWeights = field(default_factory=RewardWeights)
     exit_xy: tuple[float, float] | None = None  # set by the trainer from the map file (exit_finder.py)
+    doors_xy: tuple = ()  # (sector, x, y, key flags) of each locked door, from the map file (exit_finder.locked_doors)
 
     def reset(self, ps: dict) -> None:
         self.cells: set[tuple[int, int]] = {self._cell(ps)}
@@ -55,13 +58,14 @@ class RewardTracker:
         self.last_cell = self._cell(ps)
         self.key_d: float | None = None
         self.exit_phi = self._exit_phi(ps)
+        self.door_phi, self.door_target = None, None
         self.opened: set[int] = set()
         self.kills = ps["kills"]
         self.damage = ps["damage_taken"]
         self.health = ps["health"]
         self.keys = np.asarray(ps["keys"]).copy()
         self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0, revisits=0, close=0, exit_d=-1.0, dodge=0)
-        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0, exit_pull=0.0, dodge=0.0)
+        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0, exit_pull=0.0, dodge=0.0, door_pull=0.0)
 
     def shot(self, obs: dict, fired: bool) -> float:
         """Small cost for pulling the trigger when no enemy is roughly straight ahead."""
@@ -174,6 +178,24 @@ class RewardTracker:
                         r += w.door
                         p["door"] += w.door
                         s["doors"] += 1
+
+        # Door pull: once a key is held, lead it back to a locked door it has not opened yet.
+        # Potential-based, and restarted whenever the target door changes, so it cannot be farmed.
+        held = np.asarray(ps["keys"]) > 0.5
+        if self.doors_xy and held.any() and not ps["finished"]:
+            # only doors that a key it HOLDS can open: the blue key leads to the blue door
+            todo = [(sec, x, y) for sec, x, y, ks in self.doors_xy if sec not in self.opened and held[list(ks)].any()]
+            if todo:
+                ds = [float(np.hypot(ps["x"] - x, ps["y"] - y)) for _, x, y in todo]
+                i = int(np.argmin(ds))
+                dphi = max(0.0, w.door_radius - ds[i])
+                if self.door_target == todo[i][0] and self.door_phi is not None:
+                    pull = w.door_pull * (dphi - self.door_phi)
+                    r += pull
+                    p["door_pull"] += pull
+                self.door_phi, self.door_target = dphi, todo[i][0]
+            else:
+                self.door_phi = self.door_target = None
 
         phi = self._exit_phi(ps)
         if phi is not None and self.exit_phi is not None and not ps["finished"]:
