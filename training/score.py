@@ -172,7 +172,11 @@ def main() -> None:
     if args.outside:
         maps, args.ticks = outside_maps(), args.ticks or 4200
     else:
-        maps = sorted(glob.glob(str(ROOT / args.maps) if not os.path.isabs(args.maps) else args.maps))
+        maps = []  # comma-separated globs; "pack.wad:MAP03" picks one map inside a multi-map WAD
+        for item in args.maps.split(","):
+            pat, _, m = item.partition(":")
+            found = sorted(glob.glob(str(ROOT / pat) if not os.path.isabs(pat) else pat))
+            maps += [f"{f}:{m}" for f in found] if m else found
     if not maps:
         raise SystemExit(f"no maps matched {args.maps}")
 
