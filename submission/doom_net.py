@@ -8,6 +8,7 @@ Data flow for one decision:
     rays (64 directions)  --> RayEncoder (circular conv)    --\
     visible entities (32) --> EntityEncoder (attention)      ---> fuse --> GRU memory --> policy head (13 actions)
     vitals + last action  --> small MLP                     --/                       \-> value head (training only)
+    memory map (optional) --> MapEncoder (2D conv)          --/   (added in Run 2: see memory_map.py)
 
 No screen pixels: the rays already say "wall ahead, door on the left", and training is far cheaper.
 A sequence passed to forward() without `done` must belong to one episode (memory is not reset inside it).
@@ -20,6 +21,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from memory_map import CHANNELS, SCALES, MemoryMap  # noqa: F401
 from features import (  # noqa: F401  (numpy-only part, also used by the game worker processes)
     ACTIONS,
     MAX_ENTITIES,
@@ -98,6 +100,31 @@ class EntityEncoder(nn.Module):
         return F.relu(self.fc(out.squeeze(1)))
 
 
+class MapEncoder(nn.Module):
+    """2D convolution over the agent's own memory map (two crops: near and far, 7 layers each).
+
+    Sees things the rays cannot: "I already explored the left", "there was a locked door
+    behind me", "I saw a key over there". See memory_map.py for how the map is drawn.
+    """
+
+    def __init__(self, out_dim: int = 256):
+        super().__init__()
+        c_in = len(SCALES) * CHANNELS
+        self.conv = nn.Sequential(
+            nn.Conv2d(c_in, 32, 3, stride=2, padding=1),  # 32 -> 16
+            nn.ReLU(),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),  # 16 -> 8
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 3, stride=2, padding=1),  # 8 -> 4
+            nn.ReLU(),
+        )
+        self.fc = nn.Linear(64 * 4 * 4, out_dim)
+
+    def forward(self, m: torch.Tensor) -> torch.Tensor:
+        x = m.float().flatten(1, 2) / 255.0  # (N, 2, 7, 32, 32) uint8 -> (N, 14, 32, 32) in 0..1
+        return F.relu(self.fc(self.conv(x).flatten(1)))
+
+
 # ---------------------------------------------------------------- full network
 class DoomNet(nn.Module):
     """Encoders -> fuse -> GRU memory -> policy and value heads.
@@ -109,8 +136,16 @@ class DoomNet(nn.Module):
     sees hidden ground-truth facts. The policy never sees them, so the final agent stays legal.
     """
 
-    def __init__(self, hidden: int = 256, priv_dim: int = 0):
+    def __init__(self, hidden: int = 256, priv_dim: int = 0, use_map: bool = False):
         super().__init__()
+        self.use_map = use_map
+        if use_map:
+            self.map_enc = MapEncoder(256)
+            # Starts at ZERO, so a brain loaded from an older (map-less) run plays exactly as
+            # before on day one and learns to use the map gradually.
+            self.map_proj = nn.Linear(256, hidden)
+            nn.init.zeros_(self.map_proj.weight)
+            nn.init.zeros_(self.map_proj.bias)
         self.rays = RayEncoder(256)
         self.ents = EntityEncoder(128)
         self.vit = nn.Sequential(nn.Linear(NUM_VITALS + NUM_ACTIONS, 64), nn.ReLU())
@@ -130,7 +165,7 @@ class DoomNet(nn.Module):
     def encode(self, x: dict[str, torch.Tensor]) -> torch.Tensor:
         """Per-step features before memory. x tensors have shape (N, ...)."""
         prev = F.one_hot(x["prev_action"], NUM_ACTIONS).float()
-        return self.fuse(
+        z = self.fuse[0](
             torch.cat(
                 [
                     self.rays(x["ray_dist"], x["ray_hit"]),
@@ -140,6 +175,9 @@ class DoomNet(nn.Module):
                 -1,
             )
         )
+        if self.use_map:
+            z = z + self.map_proj(self.map_enc(x["map"]))
+        return F.relu(z)
 
     def forward(self, x: dict[str, torch.Tensor], h: torch.Tensor, done: torch.Tensor | None = None):
         """x tensors: (T, B, ...). h: (1, B, H). done: (T, B), 1 where an episode started at that step.
@@ -176,11 +214,16 @@ def save_checkpoint(model: DoomNet, path) -> None:
     torch.save({"format": CHECKPOINT_FORMAT, "model": state}, path)
 
 
+def has_map(state: dict) -> bool:
+    """True if these weights come from a brain that reads the memory map."""
+    return any(k.startswith("map_enc.") for k in state)
+
+
 def load_model(path, device: torch.device | str) -> DoomNet:
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     if checkpoint.get("format") != CHECKPOINT_FORMAT:
         raise ValueError(f"unknown checkpoint format in {path}")
-    model = DoomNet()
+    model = DoomNet(use_map=has_map(checkpoint["model"]))
     missing, unexpected = model.load_state_dict(checkpoint["model"], strict=False)
     missing = [k for k in missing if not k.startswith("value.")]
     if missing or unexpected:  # never play with a half-loaded (partly random) brain

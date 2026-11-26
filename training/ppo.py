@@ -65,6 +65,8 @@ class Config:
     overlap: bool = True  # two game groups take turns: GPU decides for one while the other plays
     seed: int = 0
     resume: str = ""
+    init_from: str = ""  # start a NEW run from another run's brain (e.g. Run 2 from Run 1); fresh optimizer
+    memory_map: bool = False  # give the brain its own memory map (memory_map.py); Run 2 on
     save_every_min: float = 10.0
     device: str = "cuda"
 
@@ -109,6 +111,11 @@ class _Slot:
         self.key = None
         self.left_on_map = 0
         self.tracker = RewardTracker(weights)
+        self.memory = None
+        if cfg.memory_map:
+            from memory_map import MemoryMap
+
+            self.memory = MemoryMap()
 
     def new_episode(self):
         from doom_env import make_env
@@ -130,10 +137,14 @@ class _Slot:
         self.mirrored = self.rng.random() < self.cfg.mirror_prob
         ps = self.env.privileged_state()
         self.tracker.reset(ps)
-        return self._obs(obs), self.tracker.critic_features(ps)
+        if self.memory is not None:
+            self.memory.reset()
+        return self._obs(obs, None), self.tracker.critic_features(ps)
 
-    def _obs(self, obs):
+    def _obs(self, obs, action_row):
         x = preprocess(obs, 0)
+        if self.memory is not None:  # drawn from the REAL (unmirrored) view; mirror() flips it with the rest
+            x["map"] = (self.memory.observe(obs, action_row) * 255).astype(np.uint8)
         return _strip(mirror(x) if self.mirrored else x)
 
     def step(self, a: int):
@@ -150,7 +161,7 @@ class _Slot:
             stats["map"] = os.path.basename(self.key[0]) + ":" + self.key[1]
             x, priv = self.new_episode()
         else:
-            x, priv = self._obs(obs), self.tracker.critic_features(ps)
+            x, priv = self._obs(obs, ACTIONS[real]), self.tracker.critic_features(ps)
         return x, priv, r, done, stats
 
 
@@ -294,7 +305,7 @@ def train(cfg: Config):
     maps = expand_maps(cfg.maps)
     print(f"[{cfg.name}] {len(maps)} maps, {cfg.workers}x{cfg.envs_per_worker} game copies, device {dev}", flush=True)
 
-    net = DoomNet(priv_dim=PRIV_DIM if cfg.asym_critic else 0).to(dev)
+    net = DoomNet(priv_dim=PRIV_DIM if cfg.asym_critic else 0, use_map=cfg.memory_map).to(dev)
     opt = torch.optim.Adam(net.parameters(), lr=cfg.lr, eps=1e-5)
     ret_std = RunningStd()
     steps = 0
@@ -305,6 +316,13 @@ def train(cfg: Config):
         steps = ck["steps"]
         ret_std.mean, ret_std.var, ret_std.count = ck["ret_std"]
         print(f"resumed from {cfg.resume} at {steps:,} steps", flush=True)
+    elif cfg.init_from:
+        ck = torch.load(cfg.init_from, map_location=dev, weights_only=False)
+        missing, unexpected = net.load_state_dict(ck["net"], strict=False)
+        if unexpected or any(not k.startswith(("map_enc.", "map_proj.")) for k in missing):
+            raise SystemExit(f"--init-from does not fit: missing {missing[:4]} unexpected {unexpected[:4]}")
+        ret_std.mean, ret_std.var, ret_std.count = ck["ret_std"]
+        print(f"started from the brain in {cfg.init_from} (new parts: {len(missing)} weight sets)", flush=True)
     print(f"parameters: {sum(p.numel() for p in net.parameters()):,}", flush=True)
 
     venv = VecEnv(maps, cfg, RewardWeights())

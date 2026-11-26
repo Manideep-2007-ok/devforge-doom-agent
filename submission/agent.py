@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from doom_net import ACTION_TABLE, IDLE, encode_observation, load_model
+from doom_net import ACTION_TABLE, IDLE, MemoryMap, encode_observation, load_model
 
 SUBMISSION_DIR = Path(__file__).resolve().parent
 WEIGHTS_PATH = SUBMISSION_DIR / "weights" / "model.pt"
@@ -59,6 +59,8 @@ class DoomAgent:
         self.hidden = self.model.initial_state(1, self.device)
         self.prev_action = IDLE
         self.generator.manual_seed(SEED)
+        self.memory = MemoryMap() if self.model.use_map else None  # the agent's own map, blank for a new map
+        self.first_step = True
 
     def act(self, observation: dict) -> np.ndarray:
         try:
@@ -75,6 +77,10 @@ class DoomAgent:
     @torch.inference_mode()
     def _choose(self, observation: dict) -> np.ndarray:
         encoded = encode_observation(observation, self.prev_action)
+        if self.memory is not None:  # draw this observation into the map, then let the network read it
+            last = None if self.first_step else ACTION_TABLE[self.prev_action]
+            encoded["map"] = (self.memory.observe(observation, last) * 255).astype(np.uint8)
+        self.first_step = False
         inputs = {
             key: torch.from_numpy(value)[None, None].to(self.device)  # (time=1, batch=1, ...)
             for key, value in encoded.items()

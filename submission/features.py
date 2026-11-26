@@ -73,4 +73,6 @@ def mirror(x: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     v[..., 15] *= -1  # vel_right
     y["vitals"] = v
     y["prev_action"] = MIRROR_ACTION[x["prev_action"]]
+    if "map" in x:  # memory map crops: (..., 2, 7, rows, cols), column 0 = far left
+        y["map"] = x["map"][..., ::-1].copy()
     return y

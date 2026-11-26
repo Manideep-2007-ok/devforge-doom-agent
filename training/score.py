@@ -61,7 +61,7 @@ def play_one(args) -> dict:
     if greedy:
         agent_mod.SAMPLE_ACTIONS = False  # always take the top choice instead of rolling dice
     from doom_env import make_env
-    from doom_net import DoomNet
+    from doom_net import DoomNet, has_map
     from ppo import map_ticks
 
     torch.set_num_threads(1)
@@ -70,7 +70,7 @@ def play_one(args) -> dict:
     env = make_env(wad, map_name, episode_ticks=ticks or map_ticks(wad, 2100), render_buffers=False)
     obs, _ = env.reset(seed=seed)
     agent = DoomAgent(env.observation_space, env.action_space, "cpu")
-    net = DoomNet()
+    net = DoomNet(use_map=has_map(weights))
     net.load_state_dict({k: v for k, v in weights.items() if not k.startswith("value.")}, strict=False)
     agent.model = net.eval()
     agent.reset()
