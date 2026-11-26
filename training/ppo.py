@@ -68,6 +68,8 @@ class Config:
     init_from: str = ""  # start a NEW run from another run's brain (e.g. Run 2 from Run 1); fresh optimizer
     memory_map: bool = False  # give the brain its own memory map (memory_map.py); Run 2 on
     eye: bool = False  # let the brain see the half-size camera image (to spot the exit); Run 2 on
+    plr: bool = False  # practise more on maps where it sometimes wins and sometimes fails (prioritized maps)
+    plr_uniform: float = 0.5  # with --plr, this share of map picks stays fully random (no map is ever dropped)
     save_every_min: float = 10.0
     device: str = "cuda"
 
@@ -106,10 +108,12 @@ def _strip(x: dict) -> dict:
 class _Slot:
     """One game copy: picks a random map each episode, shapes reward, mirrors half the episodes."""
 
-    def __init__(self, maps, cfg: Config, rng: random.Random, weights: RewardWeights):
+    def __init__(self, maps, cfg: Config, rng: random.Random, weights: RewardWeights, shared: dict):
         self.maps, self.cfg, self.rng = maps, cfg, rng
+        self.shared = shared  # {"w": map weights from the trainer, or None}: one per worker process
         self.env = None
         self.key = None
+        self.idx = 0
         self.left_on_map = 0
         self.tracker = RewardTracker(weights)
         self.memory = None
@@ -122,7 +126,12 @@ class _Slot:
         from doom_env import make_env
 
         if self.left_on_map <= 0:
-            key = self.rng.choice(self.maps)
+            w = self.shared.get("w")
+            if w is not None and self.rng.random() >= self.cfg.plr_uniform:
+                self.idx = self.rng.choices(range(len(self.maps)), weights=w)[0]
+            else:
+                self.idx = self.rng.randrange(len(self.maps))
+            key = self.maps[self.idx]
             # random count so the 40 copies don't all switch maps at the same moment
             self.left_on_map = self.rng.randint(max(1, self.cfg.episodes_per_map // 2), self.cfg.episodes_per_map * 3 // 2)
         else:
@@ -162,6 +171,7 @@ class _Slot:
         if done:
             stats = dict(self.tracker.stats, **{f"r_{k}": v for k, v in self.tracker.parts.items()})
             stats["map"] = os.path.basename(self.key[0]) + ":" + self.key[1]
+            stats["map_idx"] = self.idx
             x, priv = self.new_episode()
         else:
             x, priv = self._obs(obs, ACTIONS[real]), self.tracker.critic_features(ps)
@@ -174,7 +184,8 @@ def worker_main(remote, maps, cfg: Config, seed: int, weights: RewardWeights):
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ctrl+C goes to the trainer, which shuts workers down cleanly
     os.environ["OMP_NUM_THREADS"] = "1"
     rng = random.Random(seed)
-    slots = [_Slot(maps, cfg, rng, weights) for _ in range(cfg.envs_per_worker)]
+    shared: dict = {"w": None}
+    slots = [_Slot(maps, cfg, rng, weights, shared) for _ in range(cfg.envs_per_worker)]
     try:
         while True:
             cmd, data = remote.recv()
@@ -187,6 +198,8 @@ def worker_main(remote, maps, cfg: Config, seed: int, weights: RewardWeights):
                 x, priv, r, d, st = zip(*res)
                 remote.send((stack(list(x)), np.stack(priv), np.array(r, np.float32), np.array(d, np.float32),
                              [z for z in st if z is not None]))
+            elif cmd == "prio":  # new map weights from the trainer (no reply)
+                shared["w"] = data
             elif cmd == "close":
                 break
     finally:
@@ -232,6 +245,11 @@ class VecEnv:
         res = [self.remotes[i].recv() for i in self.groups[g]]
         o, p, rew, done, st = zip(*res)
         return concat(list(o)), np.concatenate(p), np.concatenate(rew), np.concatenate(done), [x for s in st for x in s]
+
+    def set_prio(self, w: list[float]):
+        """Send map weights to every worker. Only call between rollouts (no step in flight)."""
+        for r in self.remotes:
+            r.send(("prio", w))
 
     def reset(self):
         for r in self.remotes:
@@ -338,6 +356,19 @@ def train(cfg: Config):
     disc_ret = np.zeros(N, np.float32)
 
     keys = list(obs.keys()) + ["prev_action"]
+
+    # Prioritized maps: an average of "did it reach the exit" per map. Maps it ALWAYS wins or ALWAYS
+    # loses teach little; maps it wins about half the time teach the most, so they get picked more.
+    plr_ema = np.full(len(maps), np.nan)
+    plr_file = run_dir / "map_priority.json"
+    if cfg.plr and cfg.resume and plr_file.exists():
+        saved = json.loads(plr_file.read_text())
+        if len(saved) == len(maps):
+            plr_ema = np.array([np.nan if v is None else v for v in saved])
+
+    def plr_weights() -> list[float]:
+        e = plr_ema
+        return np.where(np.isnan(e), 1.2, 0.2 + 4.0 * np.nan_to_num(e) * (1.0 - np.nan_to_num(e))).tolist()
     t_start = time.time()
     last_save = time.time()
     upd = 0
@@ -408,6 +439,9 @@ def train(cfg: Config):
                 disc_ret[sl] *= 1 - done
                 b_rew[t, sl] = rew
                 recent.extend(stats)
+                for st in stats:
+                    i, won = st["map_idx"], float(st["exit"])
+                    plr_ema[i] = won if np.isnan(plr_ema[i]) else 0.8 * plr_ema[i] + 0.2 * won
                 prev_a[sl] = np.where(done > 0, 0, b_act[t, sl])
                 first[sl] = done
                 t_of[g] += 1
@@ -422,6 +456,8 @@ def train(cfg: Config):
                     if t < T - 1:
                         decide(g)
             steps += N * T
+            if cfg.plr:  # all games are between steps here, so it is safe to send
+                venv.set_prio(plr_weights())
             collect_s = time.time() - t0
 
             with torch.no_grad():
@@ -530,6 +566,8 @@ def train(cfg: Config):
             if time.time() - last_save > cfg.save_every_min * 60:
                 p = run_dir / "ckpt" / f"ckpt_{steps // 1000:08d}k.pt"
                 save_checkpoint(p, net, opt, steps, ret_std, cfg)
+                if cfg.plr:
+                    plr_file.write_text(json.dumps([None if np.isnan(v) else round(float(v), 4) for v in plr_ema]))
                 # every save is kept (about 11 MB each): an early save can turn out to be the best one
                 last_save = time.time()
     finally:
