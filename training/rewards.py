@@ -36,6 +36,8 @@ class RewardWeights:
     key_pull: float = 0.001  # per map unit closer to the nearest VISIBLE key (walking away takes it back)
     too_close: float = -0.01  # per step with an enemy within arm's reach: shoot from a distance
     close_range: float = 128.0
+    exit_pull: float = 0.004  # per map unit closer to the exit, within exit_radius (training-only knowledge)
+    exit_radius: float = 512.0
 
 
 @dataclass
@@ -43,19 +45,21 @@ class RewardTracker:
     """Per-episode memory of what has already been rewarded."""
 
     w: RewardWeights = field(default_factory=RewardWeights)
+    exit_xy: tuple[float, float] | None = None  # set by the trainer from the map file (exit_finder.py)
 
     def reset(self, ps: dict) -> None:
         self.cells: set[tuple[int, int]] = {self._cell(ps)}
         self.entries: dict[tuple[int, int], int] = {self._cell(ps): 1}
         self.last_cell = self._cell(ps)
         self.key_d: float | None = None
+        self.exit_phi = self._exit_phi(ps)
         self.opened: set[int] = set()
         self.kills = ps["kills"]
         self.damage = ps["damage_taken"]
         self.health = ps["health"]
         self.keys = np.asarray(ps["keys"]).copy()
-        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0, revisits=0, close=0)
-        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0)
+        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0, revisits=0, close=0, exit_d=-1.0)
+        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0, exit_pull=0.0)
 
     def shot(self, obs: dict, fired: bool) -> float:
         """Small cost for pulling the trigger when no enemy is roughly straight ahead."""
@@ -85,6 +89,15 @@ class RewardTracker:
             self.stats["close"] += 1
         self.stats["ret"] += r
         return r
+
+    def _exit_d(self, ps: dict) -> float | None:
+        if self.exit_xy is None:
+            return None
+        return float(np.hypot(ps["x"] - self.exit_xy[0], ps["y"] - self.exit_xy[1]))
+
+    def _exit_phi(self, ps: dict) -> float | None:
+        d = self._exit_d(ps)
+        return None if d is None else max(0.0, self.w.exit_radius - d)
 
     def _cell(self, ps: dict) -> tuple[int, int]:
         return int(ps["x"] // self.w.cell_size), int(ps["y"] // self.w.cell_size)
@@ -156,6 +169,13 @@ class RewardTracker:
                         p["door"] += w.door
                         s["doors"] += 1
 
+        phi = self._exit_phi(ps)
+        if phi is not None and self.exit_phi is not None and not ps["finished"]:
+            pull = w.exit_pull * (phi - self.exit_phi)  # potential-based: circling near the exit adds up to zero
+            r += pull
+            p["exit_pull"] += pull
+        self.exit_phi = phi
+
         if ps["finished"]:
             if ps["exit_reached"]:
                 time_left = max(0.0, 1.0 - ps["tic"] / max(ps["episode_ticks"], 1))
@@ -163,6 +183,8 @@ class RewardTracker:
                 r += bonus
                 p["exit"] += bonus
                 s["exit"] = 1
+                d = self._exit_d(ps)
+                s["exit_d"] = -1.0 if d is None else d
             elif ps["dead"]:
                 time_left = max(0.0, 1.0 - ps["tic"] / max(ps["episode_ticks"], 1))
                 cost = w.death - w.death_time * time_left

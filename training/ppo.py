@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT / "submission"))
 sys.path.insert(0, str(ROOT / "training"))
 
 from features import ACTIONS, MIRROR_ACTION, mirror, preprocess, small_rgb  # noqa: E402  (numpy only: workers never load torch)
+from exit_finder import exit_point
 from rewards import PRIV_DIM, RewardTracker, RewardWeights  # noqa: E402
 
 ATTACK_BUTTON = 6  # column of ATTACK in each ACTIONS row (doom_env.spaces.BUTTONS order)
@@ -144,6 +145,7 @@ class _Slot:
             self.key = key
         obs, _ = self.env.reset(seed=self.rng.randrange(1 << 30))
         self.last_obs = obs
+        self.tracker.exit_xy = exit_point(key[0], key[1])
         self.mirrored = self.rng.random() < self.cfg.mirror_prob
         ps = self.env.privileged_state()
         self.tracker.reset(ps)
