@@ -16,6 +16,7 @@ Each map's points are multiplied by its tier (1-4), then summed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import glob
 import json
 import multiprocessing as mp
@@ -169,7 +170,9 @@ def main() -> None:
 
     targets = sorted(glob.glob(os.path.join(args.target, "ckpt_*.pt"))) if args.best else [args.target]
     history_path = Path(args.target if args.best else os.path.dirname(args.target)) / (
-        ("scores_outside" if args.outside else "scores") + ("_greedy" if args.greedy else "") + ".jsonl")
+        ("scores_outside" if args.outside else "scores")
+        + ("" if args.outside or args.maps == DEFAULT_MAPS else "_" + hashlib.md5(args.maps.encode()).hexdigest()[:6])
+        + ("_greedy" if args.greedy else "") + ".jsonl")  # one history per map set, so results never mix
     done = {}
     if history_path.exists():
         for line in history_path.read_text().splitlines():
