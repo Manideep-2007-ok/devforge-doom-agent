@@ -37,6 +37,9 @@ class RewardWeights:
     too_close: float = -0.02  # per step with an enemy within arm's reach: shoot from a distance
     projectile_near: float = -0.05  # per step with a fireball/rocket within projectile_range: step aside
     projectile_range: float = 160.0
+    gunner_exposed: float = -0.01  # per step a bullet-firing enemy sees you and you are not aiming at it:
+    gunner_range: float = 1024.0
+    chaingunner_extra: float = -0.02  # on top of gunner_exposed when that gunner is a chaingunner (3x in total)  #   shoot it or get out of its sight (chaingunner, shotgunner, zombieman)
     close_range: float = 128.0
     exit_pull: float = 0.004  # per map unit closer to the exit, within exit_radius (training-only knowledge)
     exit_radius: float = 512.0
@@ -64,8 +67,8 @@ class RewardTracker:
         self.damage = ps["damage_taken"]
         self.health = ps["health"]
         self.keys = np.asarray(ps["keys"]).copy()
-        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0, revisits=0, close=0, exit_d=-1.0, dodge=0)
-        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0, exit_pull=0.0, dodge=0.0, door_pull=0.0)
+        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0, revisits=0, close=0, exit_d=-1.0, dodge=0, exposed=0, chaingun=0)
+        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0, exit_pull=0.0, dodge=0.0, door_pull=0.0, exposed=0.0)
 
     def shot(self, obs: dict, fired: bool) -> float:
         """Small cost for pulling the trigger when no enemy is roughly straight ahead."""
@@ -76,7 +79,7 @@ class RewardTracker:
         self.stats["ret"] += self.w.wasted_shot
         return self.w.wasted_shot
 
-    def look(self, obs: dict) -> float:
+    def look(self, obs: dict, chaingunners=()) -> float:
         """Rewards from what the agent can see (its own observation): key pull and enemy too close."""
         ve = obs["visible_entities"]
         f, t, m = ve["features"], ve["entity_type"], ve["mask"]
@@ -97,6 +100,15 @@ class RewardTracker:
             r += self.w.projectile_near
             self.parts["dodge"] += self.w.projectile_near
             self.stats["dodge"] += 1
+        gun = (m > 0) & (t == HITSCAN_TYPE) & (d < self.w.gunner_range)
+        if gun.any() and not (gun & (np.abs(f[:, 1]) < AIM_SIN) & (f[:, 2] > 0)).any():
+            r += self.w.gunner_exposed
+            self.parts["exposed"] += self.w.gunner_exposed
+            self.stats["exposed"] += 1
+            if len(chaingunners) and (np.abs(d[gun][:, None] - np.asarray(chaingunners)[None, :]) < 16).any():
+                r += self.w.chaingunner_extra
+                self.parts["exposed"] += self.w.chaingunner_extra
+                self.stats["chaingun"] += 1
         self.stats["ret"] += r
         return r
 
@@ -246,7 +258,8 @@ PRIV_DIM = 6
 
 ENEMY_TYPES = (1, 2, 3)  # enemy_melee, enemy_hitscan, enemy_projectile (doom_env.spaces.ENTITY_TYPES)
 KEY_TYPE = 9
-PROJECTILE_TYPE = 4  # fireballs, rockets (doom_env.spaces.ENTITY_TYPES)
+PROJECTILE_TYPE = 4
+HITSCAN_TYPE = 2  # enemy_hitscan: zombieman, shotgunner, chaingunner (their bullets cannot be dodged)  # fireballs, rockets (doom_env.spaces.ENTITY_TYPES)
 AIM_SIN = 0.26  # about 15 degrees either side of straight ahead
 
 

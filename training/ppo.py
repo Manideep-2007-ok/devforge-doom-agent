@@ -156,6 +156,7 @@ class _Slot:
         self.tracker.doors_xy = locked_doors(key[0], key[1])
         self.mirrored = self.rng.random() < self.cfg.mirror_prob
         ps = self.env.privileged_state()
+        self.last_xy = (ps["x"], ps["y"])
         self.tracker.reset(ps)
         if self.memory is not None:
             self.memory.reset()
@@ -169,12 +170,25 @@ class _Slot:
             x["eye"] = small_rgb(obs["rgb"])
         return _strip(mirror(x) if self.mirrored else x)
 
+    def _chaingunners(self) -> list[float]:
+        """Training only: distances to living chaingunners, read by NAME from the game (all bullet
+        enemies are the same size, so the agent's entity list cannot tell a chaingunner apart)."""
+        try:
+            st = self.env._game.get_state()
+        except Exception:
+            return []
+        if st is None or not st.objects:
+            return []
+        x, y = self.last_xy
+        return [float(np.hypot(o.position_x - x, o.position_y - y)) for o in st.objects if o.name == "ChaingunGuy"]
+
     def step(self, a: int):
         real = MIRROR_ACTION[a] if self.mirrored else a
-        r = self.tracker.shot(self.last_obs, bool(ACTIONS[real][ATTACK_BUTTON])) + self.tracker.look(self.last_obs)
+        r = self.tracker.shot(self.last_obs, bool(ACTIONS[real][ATTACK_BUTTON])) + self.tracker.look(self.last_obs, self._chaingunners())
         obs, _, term, trunc, _ = self.env.step(ACTIONS[real])
         self.last_obs = obs
         ps = self.env.privileged_state()
+        self.last_xy = (ps["x"], ps["y"])
         r += self.tracker(ps)
         done = term or trunc
         stats = None
