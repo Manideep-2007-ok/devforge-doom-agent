@@ -155,12 +155,17 @@ def main() -> None:
     ap.add_argument("--run", default="runs/run1", help="training run whose newest save to watch")
     ap.add_argument("--ckpt", default="", help="watch this exact save instead of the newest")
     ap.add_argument("--outside", action="store_true", help="real Freedoom levels instead of our test maps")
+    ap.add_argument("--maps", default="", help="any map list, like training's --maps (globs, pack.wad:MAP05, @file)")
     ap.add_argument("--plain", action="store_true", help="hide the coloured 'what the agent senses' overlay")
     ap.add_argument("--fps", type=int, default=9, help="decisions per second (9 = real game speed)")
     args = ap.parse_args()
     torch.set_num_threads(1)
 
-    maps = outside_maps() if args.outside else sorted(glob.glob(str(ROOT / "maps/gen/heldout/*/*.wad")))
+    if args.maps:
+        from ppo import expand_maps
+        maps = sorted({f"{w}:{m}" for w, m in expand_maps(args.maps)})
+    else:
+        maps = outside_maps() if args.outside else sorted(glob.glob(str(ROOT / "maps/gen/heldout/*/*.wad")))
     random.shuffle(maps)
     pygame.init()
     screen = pygame.display.set_mode((160 * SCALE + PANEL, max(120 * SCALE + 40, PANEL + 130)))
@@ -174,7 +179,7 @@ def main() -> None:
         wad, _, map_name = spec.partition(":")
         map_name = map_name or "MAP01"
         ckpt = args.ckpt or newest(args.run)
-        ticks = 4200 if args.outside else map_ticks(wad, 2100)
+        ticks = 4200 if args.outside else map_ticks(wad, 4200 if args.maps else 2100)
         env = make_env(wad, map_name, episode_ticks=ticks, render_buffers=True)
         obs, _ = env.reset(seed=i)
         agent = DoomAgent(env.observation_space, env.action_space, "cpu")
@@ -184,7 +189,7 @@ def main() -> None:
         mm = MemoryMap() if own else agent.memory
         if own:
             mm.observe(obs)
-        label = f"{Path(wad).stem}:{map_name}" if args.outside else Path(wad).stem
+        label = f"{Path(wad).stem}:{map_name}" if (args.outside or args.maps) else Path(wad).stem
         step, paused, skip = 0, False, False
         while True:
             for ev in pygame.event.get():
