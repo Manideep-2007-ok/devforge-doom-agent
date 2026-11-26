@@ -9,6 +9,7 @@ Data flow for one decision:
     visible entities (32) --> EntityEncoder (attention)      ---> fuse --> GRU memory --> policy head (13 actions)
     vitals + last action  --> small MLP                     --/                       \-> value head (training only)
     memory map (optional) --> MapEncoder (2D conv)          --/   (added in Run 2: see memory_map.py)
+    camera (optional)     --> EyeEncoder (2D conv, 80x60)   --/   (added in Run 2: the exit pad is only visible in pixels)
 
 No screen pixels: the rays already say "wall ahead, door on the left", and training is far cheaper.
 A sequence passed to forward() without `done` must belong to one episode (memory is not reset inside it).
@@ -22,6 +23,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from memory_map import CHANNELS, SCALES, MemoryMap  # noqa: F401
+from features import small_rgb  # noqa: F401
 from features import (  # noqa: F401  (numpy-only part, also used by the game worker processes)
     ACTIONS,
     MAX_ENTITIES,
@@ -125,6 +127,30 @@ class MapEncoder(nn.Module):
         return F.relu(self.fc(self.conv(x).flatten(1)))
 
 
+class EyeEncoder(nn.Module):
+    """Small CNN on the half-size camera image (3 x 60 x 80).
+
+    The rays and the entity list never mention the level EXIT: in these maps it is a special floor pad
+    that only shows up in the picture. This lets the brain learn by itself what the exit looks like.
+    """
+
+    def __init__(self, out_dim: int = 256):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(3, 16, 5, stride=2, padding=2),  # 60x80 -> 30x40
+            nn.ReLU(),
+            nn.Conv2d(16, 32, 3, stride=2, padding=1),  # -> 15x20
+            nn.ReLU(),
+            nn.Conv2d(32, 32, 3, stride=2, padding=1),  # -> 8x10
+            nn.ReLU(),
+        )
+        self.fc = nn.Linear(32 * 8 * 10, out_dim)
+
+    def forward(self, img: torch.Tensor) -> torch.Tensor:
+        x = img.float() / 255.0
+        return F.relu(self.fc(self.conv(x).flatten(1)))
+
+
 # ---------------------------------------------------------------- full network
 class DoomNet(nn.Module):
     """Encoders -> fuse -> GRU memory -> policy and value heads.
@@ -136,9 +162,15 @@ class DoomNet(nn.Module):
     sees hidden ground-truth facts. The policy never sees them, so the final agent stays legal.
     """
 
-    def __init__(self, hidden: int = 256, priv_dim: int = 0, use_map: bool = False):
+    def __init__(self, hidden: int = 256, priv_dim: int = 0, use_map: bool = False, use_eye: bool = False):
         super().__init__()
         self.use_map = use_map
+        self.use_eye = use_eye
+        if use_eye:  # starts at zero too (see map_proj below)
+            self.eye_enc = EyeEncoder(256)
+            self.eye_proj = nn.Linear(256, hidden)
+            nn.init.zeros_(self.eye_proj.weight)
+            nn.init.zeros_(self.eye_proj.bias)
         if use_map:
             self.map_enc = MapEncoder(256)
             # Starts at ZERO, so a brain loaded from an older (map-less) run plays exactly as
@@ -177,6 +209,8 @@ class DoomNet(nn.Module):
         )
         if self.use_map:
             z = z + self.map_proj(self.map_enc(x["map"]))
+        if self.use_eye:
+            z = z + self.eye_proj(self.eye_enc(x["eye"]))
         return F.relu(z)
 
     def forward(self, x: dict[str, torch.Tensor], h: torch.Tensor, done: torch.Tensor | None = None):
@@ -219,11 +253,21 @@ def has_map(state: dict) -> bool:
     return any(k.startswith("map_enc.") for k in state)
 
 
+def has_eye(state: dict) -> bool:
+    """True if these weights come from a brain that looks at the camera image."""
+    return any(k.startswith("eye_enc.") for k in state)
+
+
+def net_for(state: dict, **kw) -> "DoomNet":
+    """An empty DoomNet with the same optional parts as these weights."""
+    return DoomNet(use_map=has_map(state), use_eye=has_eye(state), **kw)
+
+
 def load_model(path, device: torch.device | str) -> DoomNet:
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     if checkpoint.get("format") != CHECKPOINT_FORMAT:
         raise ValueError(f"unknown checkpoint format in {path}")
-    model = DoomNet(use_map=has_map(checkpoint["model"]))
+    model = net_for(checkpoint["model"])
     missing, unexpected = model.load_state_dict(checkpoint["model"], strict=False)
     missing = [k for k in missing if not k.startswith("value.")]
     if missing or unexpected:  # never play with a half-loaded (partly random) brain

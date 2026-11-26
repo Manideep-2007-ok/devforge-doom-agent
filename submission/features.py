@@ -59,6 +59,13 @@ def preprocess(obs: dict, prev_action: int | np.ndarray) -> dict[str, np.ndarray
     }
 
 
+def small_rgb(rgb: np.ndarray) -> np.ndarray:
+    """(120, 160, 3) camera image -> (3, 60, 80) uint8: half size, enough to spot the exit pad and items."""
+    a = np.asarray(rgb, np.uint16)
+    a = (a[0::2, 0::2] + a[1::2, 0::2] + a[0::2, 1::2] + a[1::2, 1::2]) // 4
+    return np.ascontiguousarray(a.astype(np.uint8).transpose(2, 0, 1))
+
+
 def mirror(x: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     """Left-right mirror of a preprocessed obs. Ray i points i*5.6 deg to the LEFT, so ray i <-> ray (64-i)."""
     idx = (-np.arange(NUM_RAYS)) % NUM_RAYS
@@ -73,6 +80,8 @@ def mirror(x: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     v[..., 15] *= -1  # vel_right
     y["vitals"] = v
     y["prev_action"] = MIRROR_ACTION[x["prev_action"]]
+    if "eye" in x:  # camera image: flip left-right
+        y["eye"] = x["eye"][..., ::-1].copy()
     if "map" in x:  # memory map crops: (..., 2, 7, rows, cols), column 0 = far left
         y["map"] = x["map"][..., ::-1].copy()
     return y

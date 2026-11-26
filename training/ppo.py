@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "submission"))
 sys.path.insert(0, str(ROOT / "training"))
 
-from features import ACTIONS, MIRROR_ACTION, mirror, preprocess  # noqa: E402  (numpy only: workers never load torch)
+from features import ACTIONS, MIRROR_ACTION, mirror, preprocess, small_rgb  # noqa: E402  (numpy only: workers never load torch)
 from rewards import PRIV_DIM, RewardTracker, RewardWeights  # noqa: E402
 
 ATTACK_BUTTON = 6  # column of ATTACK in each ACTIONS row (doom_env.spaces.BUTTONS order)
@@ -67,6 +67,7 @@ class Config:
     resume: str = ""
     init_from: str = ""  # start a NEW run from another run's brain (e.g. Run 2 from Run 1); fresh optimizer
     memory_map: bool = False  # give the brain its own memory map (memory_map.py); Run 2 on
+    eye: bool = False  # let the brain see the half-size camera image (to spot the exit); Run 2 on
     save_every_min: float = 10.0
     device: str = "cuda"
 
@@ -130,7 +131,7 @@ class _Slot:
         if key != self.key:
             if self.env is not None:
                 self.env.close()
-            self.env = make_env(key[0], key[1], episode_ticks=map_ticks(key[0], self.cfg.episode_ticks), render_buffers=False)
+            self.env = make_env(key[0], key[1], episode_ticks=map_ticks(key[0], self.cfg.episode_ticks), render_buffers=self.cfg.eye)
             self.key = key
         obs, _ = self.env.reset(seed=self.rng.randrange(1 << 30))
         self.last_obs = obs
@@ -145,6 +146,8 @@ class _Slot:
         x = preprocess(obs, 0)
         if self.memory is not None:  # drawn from the REAL (unmirrored) view; mirror() flips it with the rest
             x["map"] = (self.memory.observe(obs, action_row) * 255).astype(np.uint8)
+        if self.cfg.eye:
+            x["eye"] = small_rgb(obs["rgb"])
         return _strip(mirror(x) if self.mirrored else x)
 
     def step(self, a: int):
@@ -305,7 +308,7 @@ def train(cfg: Config):
     maps = expand_maps(cfg.maps)
     print(f"[{cfg.name}] {len(maps)} maps, {cfg.workers}x{cfg.envs_per_worker} game copies, device {dev}", flush=True)
 
-    net = DoomNet(priv_dim=PRIV_DIM if cfg.asym_critic else 0, use_map=cfg.memory_map).to(dev)
+    net = DoomNet(priv_dim=PRIV_DIM if cfg.asym_critic else 0, use_map=cfg.memory_map, use_eye=cfg.eye).to(dev)
     opt = torch.optim.Adam(net.parameters(), lr=cfg.lr, eps=1e-5)
     ret_std = RunningStd()
     steps = 0
@@ -319,7 +322,7 @@ def train(cfg: Config):
     elif cfg.init_from:
         ck = torch.load(cfg.init_from, map_location=dev, weights_only=False)
         missing, unexpected = net.load_state_dict(ck["net"], strict=False)
-        if unexpected or any(not k.startswith(("map_enc.", "map_proj.")) for k in missing):
+        if unexpected or any(not k.startswith(("map_enc.", "map_proj.", "eye_enc.", "eye_proj.")) for k in missing):
             raise SystemExit(f"--init-from does not fit: missing {missing[:4]} unexpected {unexpected[:4]}")
         ret_std.mean, ret_std.var, ret_std.count = ck["ret_std"]
         print(f"started from the brain in {cfg.init_from} (new parts: {len(missing)} weight sets)", flush=True)

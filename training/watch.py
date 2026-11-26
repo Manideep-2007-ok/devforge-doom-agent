@@ -36,7 +36,7 @@ import torch  # noqa: E402
 
 from agent import DoomAgent  # noqa: E402
 from doom_env import make_env  # noqa: E402
-from doom_net import DoomNet, has_map  # noqa: E402
+from doom_net import DoomNet, has_map, net_for  # noqa: E402
 from memory_map import DOOR, ENEMY, FREE, KEY, LOCKED, TRAIL, WALL, MemoryMap  # noqa: E402
 from ppo import map_ticks  # noqa: E402
 from score import outside_maps  # noqa: E402
@@ -145,7 +145,7 @@ def newest(run: str) -> str:
 def load_brain(path: str) -> DoomNet:
     state = torch.load(path, map_location="cpu", weights_only=False)
     weights = state["net"] if "net" in state else state["model"]
-    net = DoomNet(use_map=has_map(weights))
+    net = net_for(weights)
     net.load_state_dict({k: v for k, v in weights.items() if not k.startswith("value.")}, strict=False)
     return net.eval()
 

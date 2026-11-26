@@ -32,7 +32,7 @@ def main() -> None:
     from agent import DoomAgent  # noqa: E402
     from doom_env import make_env  # noqa: E402
 
-    env = make_env(str(ROOT / "maps" / "two_rooms.wad"), "MAP01", render_buffers=False)
+    env = make_env(str(ROOT / "maps" / "two_rooms.wad"), "MAP01", render_buffers=True)
     obs, _ = env.reset(seed=0)
     agent = DoomAgent(env.observation_space, env.action_space, "cpu")
     agent.reset()

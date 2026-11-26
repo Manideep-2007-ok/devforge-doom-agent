@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from doom_net import ACTION_TABLE, IDLE, MemoryMap, encode_observation, load_model
+from doom_net import ACTION_TABLE, IDLE, MemoryMap, encode_observation, load_model, small_rgb
 
 SUBMISSION_DIR = Path(__file__).resolve().parent
 WEIGHTS_PATH = SUBMISSION_DIR / "weights" / "model.pt"
@@ -80,6 +80,8 @@ class DoomAgent:
         if self.memory is not None:  # draw this observation into the map, then let the network read it
             last = None if self.first_step else ACTION_TABLE[self.prev_action]
             encoded["map"] = (self.memory.observe(observation, last) * 255).astype(np.uint8)
+        if self.model.use_eye:  # half-size camera image
+            encoded["eye"] = small_rgb(observation["rgb"])
         self.first_step = False
         inputs = {
             key: torch.from_numpy(value)[None, None].to(self.device)  # (time=1, batch=1, ...)
