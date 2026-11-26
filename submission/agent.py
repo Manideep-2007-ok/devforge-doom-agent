@@ -25,6 +25,7 @@ WEIGHTS_PATH = SUBMISSION_DIR / "weights" / "model.pt"
 # True: draw each action from the network's probabilities. False: always take the most likely one.
 # Compare both on held-out maps before the final submission.
 SAMPLE_ACTIONS = True
+TEMPERATURE = 1.0  # dice strength: 1.0 = as trained; below 1 leans harder toward the top choice
 SEED = 0
 
 
@@ -88,7 +89,7 @@ class DoomAgent:
             for key, value in encoded.items()
         }
         logits, _, hidden = self.model(inputs, self.hidden)
-        probabilities = logits[0, 0].softmax(dim=-1).cpu()
+        probabilities = (logits[0, 0] / TEMPERATURE).softmax(dim=-1).cpu()
         if SAMPLE_ACTIONS:
             choice = int(torch.multinomial(probabilities, 1, generator=self.generator))
         else:
