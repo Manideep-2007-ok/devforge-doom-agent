@@ -61,6 +61,7 @@ def play_one(args) -> dict:
     from agent import DoomAgent
     if greedy:
         agent_mod.SAMPLE_ACTIONS = False  # always take the top choice instead of rolling dice
+    agent_mod.SEED = seed  # the agent's dice and the game's randomness both follow --seed
     from doom_env import make_env
     from doom_net import DoomNet, has_map, net_for
     from ppo import map_ticks
@@ -125,11 +126,13 @@ def play_one(args) -> dict:
     return out
 
 
-def score(ckpt: str, maps: list[str], procs: int, seed: int = 0, ticks: int = 0, greedy: bool = False) -> dict:
+def score(ckpt: str, maps: list[str], procs: int, seed: int = 0, ticks: int = 0, greedy: bool = False,
+          seeds: int = 1) -> dict:
+    """Play every map `seeds` times (dice seeds seed, seed+1, ...) and average: one game per map is noisy."""
     ctx = mp.get_context("spawn")
     with ctx.Pool(procs) as pool:
-        rows = pool.map(play_one, [(ckpt, m, seed, ticks, greedy) for m in maps])
-    total = sum(r["weighted"] for r in rows)
+        rows = pool.map(play_one, [(ckpt, m, seed + k, ticks, greedy) for k in range(seeds) for m in maps])
+    total = sum(r["weighted"] for r in rows) / seeds
     by_tier = {}
     for r in rows:
         t = by_tier.setdefault(r["tier"], {"maps": 0, "exit": 0, "keys": 0, "locked": 0, "doors": 0, "cells": 0, "kills": 0, "dead": 0})
@@ -157,6 +160,8 @@ def main() -> None:
     ap.add_argument("--maps", default=DEFAULT_MAPS)
     ap.add_argument("--procs", type=int, default=max(1, min(10, (os.cpu_count() or 2) - 2)))
     ap.add_argument("--outside", action="store_true", help="test on real Freedoom levels that ship with ViZDoom (not our generated maps)")
+    ap.add_argument("--seeds", type=int, default=1, help="play each map this many times and average (less luck)")
+    ap.add_argument("--seed", type=int, default=0, help="replay with different dice rolls (0 = the standard test)")
     ap.add_argument("--greedy", action="store_true", help="always pick the top action (no dice roll)")
     ap.add_argument("--ticks", type=int, default=0, help="episode length override (35 ticks = 1 second)")
     ap.add_argument("--best", action="store_true", help="score every checkpoint in the folder; copy the best to best.pt")
@@ -172,7 +177,7 @@ def main() -> None:
     history_path = Path(args.target if args.best else os.path.dirname(args.target)) / (
         ("scores_outside" if args.outside else "scores")
         + ("" if args.outside or args.maps == DEFAULT_MAPS else "_" + hashlib.md5(args.maps.encode()).hexdigest()[:6])
-        + ("_greedy" if args.greedy else "") + ".jsonl")  # one history per map set, so results never mix
+        + ("_greedy" if args.greedy else "") + (f"_s{args.seed}" if args.seed else "") + (f"_x{args.seeds}" if args.seeds > 1 else "") + ".jsonl")  # one history per map set, so results never mix
     done = {}
     if history_path.exists():
         for line in history_path.read_text().splitlines():
@@ -180,7 +185,7 @@ def main() -> None:
             done[r["ckpt"]] = r
     best = None
     for t in targets:
-        res = done.get(t) or score(t, maps, args.procs, ticks=args.ticks, greedy=args.greedy)
+        res = done.get(t) or score(t, maps, args.procs, seed=args.seed, ticks=args.ticks, greedy=args.greedy, seeds=args.seeds)
         if t not in done:
             with history_path.open("a") as f:
                 f.write(json.dumps({k: v for k, v in res.items() if k != "rows"}) + "\n")
