@@ -47,7 +47,8 @@ def outside_maps() -> list[str]:
 
 
 def play_one(args) -> dict:
-    ckpt, spec, seed, ticks = args
+    ckpt, spec, seed, ticks = args[:4]
+    greedy = len(args) > 4 and args[4]
     wad, _, map_name = spec.partition(":")
     map_name = map_name or "MAP01"
     os.environ["OMP_NUM_THREADS"] = "1"
@@ -55,7 +56,10 @@ def play_one(args) -> dict:
     import numpy as np
     import torch
 
+    import agent as agent_mod
     from agent import DoomAgent
+    if greedy:
+        agent_mod.SAMPLE_ACTIONS = False  # always take the top choice instead of rolling dice
     from doom_env import make_env
     from doom_net import DoomNet
     from ppo import map_ticks
@@ -120,10 +124,10 @@ def play_one(args) -> dict:
     return out
 
 
-def score(ckpt: str, maps: list[str], procs: int, seed: int = 0, ticks: int = 0) -> dict:
+def score(ckpt: str, maps: list[str], procs: int, seed: int = 0, ticks: int = 0, greedy: bool = False) -> dict:
     ctx = mp.get_context("spawn")
     with ctx.Pool(procs) as pool:
-        rows = pool.map(play_one, [(ckpt, m, seed, ticks) for m in maps])
+        rows = pool.map(play_one, [(ckpt, m, seed, ticks, greedy) for m in maps])
     total = sum(r["weighted"] for r in rows)
     by_tier = {}
     for r in rows:
@@ -152,6 +156,7 @@ def main() -> None:
     ap.add_argument("--maps", default=DEFAULT_MAPS)
     ap.add_argument("--procs", type=int, default=max(1, min(10, (os.cpu_count() or 2) - 2)))
     ap.add_argument("--outside", action="store_true", help="test on real Freedoom levels that ship with ViZDoom (not our generated maps)")
+    ap.add_argument("--greedy", action="store_true", help="always pick the top action (no dice roll)")
     ap.add_argument("--ticks", type=int, default=0, help="episode length override (35 ticks = 1 second)")
     ap.add_argument("--best", action="store_true", help="score every checkpoint in the folder; copy the best to best.pt")
     args = ap.parse_args()
@@ -164,7 +169,7 @@ def main() -> None:
 
     targets = sorted(glob.glob(os.path.join(args.target, "ckpt_*.pt"))) if args.best else [args.target]
     history_path = Path(args.target if args.best else os.path.dirname(args.target)) / (
-        "scores_outside.jsonl" if args.outside else "scores.jsonl")
+        ("scores_outside" if args.outside else "scores") + ("_greedy" if args.greedy else "") + ".jsonl")
     done = {}
     if history_path.exists():
         for line in history_path.read_text().splitlines():
@@ -172,7 +177,7 @@ def main() -> None:
             done[r["ckpt"]] = r
     best = None
     for t in targets:
-        res = done.get(t) or score(t, maps, args.procs, ticks=args.ticks)
+        res = done.get(t) or score(t, maps, args.procs, ticks=args.ticks, greedy=args.greedy)
         if t not in done:
             with history_path.open("a") as f:
                 f.write(json.dumps({k: v for k, v in res.items() if k != "rows"}) + "\n")

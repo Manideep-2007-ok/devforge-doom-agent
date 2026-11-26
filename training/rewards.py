@@ -26,6 +26,7 @@ class RewardWeights:
     death: float = -3.0
     timeout: float = -1.0
     step: float = -0.001
+    wasted_shot: float = -0.02  # firing with no enemy in front (25 wasted shots = one kill)
     cell_size: float = 64.0
 
 
@@ -41,8 +42,17 @@ class RewardTracker:
         self.kills = ps["kills"]
         self.damage = ps["damage_taken"]
         self.keys = np.asarray(ps["keys"]).copy()
-        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0)
-        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0)
+        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0)
+        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0)
+
+    def shot(self, obs: dict, fired: bool) -> float:
+        """Small cost for pulling the trigger when no enemy is roughly straight ahead."""
+        if not fired or enemy_ahead(obs):
+            return 0.0
+        self.parts["waste"] += self.w.wasted_shot
+        self.stats["wasted"] += 1
+        self.stats["ret"] += self.w.wasted_shot
+        return self.w.wasted_shot
 
     def _cell(self, ps: dict) -> tuple[int, int]:
         return int(ps["x"] // self.w.cell_size), int(ps["y"] // self.w.cell_size)
@@ -129,3 +139,14 @@ class RewardTracker:
 
 
 PRIV_DIM = 6
+
+ENEMY_TYPES = (1, 2, 3)  # enemy_melee, enemy_hitscan, enemy_projectile (doom_env.spaces.ENTITY_TYPES)
+AIM_SIN = 0.26  # about 15 degrees either side of straight ahead
+
+
+def enemy_ahead(obs: dict) -> bool:
+    """True if the agent can see an enemy roughly in its crosshair (from the agent's own observation)."""
+    ve = obs["visible_entities"]
+    f, t, m = ve["features"], ve["entity_type"], ve["mask"]
+    hit = (m > 0) & np.isin(t, ENEMY_TYPES) & (np.abs(f[:, 1]) < AIM_SIN) & (f[:, 2] > 0)
+    return bool(hit.any())

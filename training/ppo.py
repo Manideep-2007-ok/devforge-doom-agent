@@ -34,6 +34,8 @@ sys.path.insert(0, str(ROOT / "training"))
 from features import ACTIONS, MIRROR_ACTION, mirror, preprocess  # noqa: E402  (numpy only: workers never load torch)
 from rewards import PRIV_DIM, RewardTracker, RewardWeights  # noqa: E402
 
+ATTACK_BUTTON = 6  # column of ATTACK in each ACTIONS row (doom_env.spaces.BUTTONS order)
+
 
 # ============================================================== config
 @dataclass
@@ -124,6 +126,7 @@ class _Slot:
             self.env = make_env(key[0], key[1], episode_ticks=map_ticks(key[0], self.cfg.episode_ticks), render_buffers=False)
             self.key = key
         obs, _ = self.env.reset(seed=self.rng.randrange(1 << 30))
+        self.last_obs = obs
         self.mirrored = self.rng.random() < self.cfg.mirror_prob
         ps = self.env.privileged_state()
         self.tracker.reset(ps)
@@ -135,9 +138,11 @@ class _Slot:
 
     def step(self, a: int):
         real = MIRROR_ACTION[a] if self.mirrored else a
+        r = self.tracker.shot(self.last_obs, bool(ACTIONS[real][ATTACK_BUTTON]))
         obs, _, term, trunc, _ = self.env.step(ACTIONS[real])
+        self.last_obs = obs
         ps = self.env.privileged_state()
-        r = self.tracker(ps)
+        r += self.tracker(ps)
         done = term or trunc
         stats = None
         if done:
