@@ -38,8 +38,18 @@ def tier_of(wad: str) -> int:
     return int(m.group(1)) if m else 1
 
 
+def outside_maps() -> list[str]:
+    """Real handmade levels (Freedoom, BSD licence) that ship inside the vizdoom package."""
+    import vizdoom
+    d = os.path.dirname(vizdoom.__file__)
+    return ([f"{d}/freedoom2.wad:MAP{i:02d}" for i in range(1, 11)]
+            + [f"{d}/freedoom1.wad:E1M{i}" for i in range(1, 10)])
+
+
 def play_one(args) -> dict:
-    ckpt, wad, seed = args
+    ckpt, spec, seed, ticks = args
+    wad, _, map_name = spec.partition(":")
+    map_name = map_name or "MAP01"
     os.environ["OMP_NUM_THREADS"] = "1"
     sys.path[:0] = [str(ROOT / "submission"), str(ROOT / "training")]
     import numpy as np
@@ -53,7 +63,7 @@ def play_one(args) -> dict:
     torch.set_num_threads(1)
     state = torch.load(ckpt, map_location="cpu", weights_only=False)
     weights = state["net"] if "net" in state else state["model"]
-    env = make_env(wad, "MAP01", episode_ticks=map_ticks(wad, 2100), render_buffers=False)
+    env = make_env(wad, map_name, episode_ticks=ticks or map_ticks(wad, 2100), render_buffers=False)
     obs, _ = env.reset(seed=seed)
     agent = DoomAgent(env.observation_space, env.action_space, "cpu")
     net = DoomNet()
@@ -91,7 +101,8 @@ def play_one(args) -> dict:
 
     time_left = max(0.0, 1.0 - ps["tic"] / ps["episode_ticks"])
     out = {
-        "map": os.path.relpath(wad, ROOT), "tier": tier_of(wad), "exit": int(ps["exit_reached"]),
+        "map": os.path.relpath(wad, ROOT) + (":" + map_name if map_name != "MAP01" else ""),
+        "tier": 4 if ticks else tier_of(wad), "exit": int(ps["exit_reached"]),
         "dead": int(ps["dead"]), "keys": int(keys_seen.sum()), "doors": doors, "locked": locked,
         "cells": len(cells), "kills": ps["kills"] - kills0, "damage": ps["damage_taken"],
         "health": max(ps["health"], 0.0), "time_left": time_left, "errors": agent.errors,
@@ -109,10 +120,10 @@ def play_one(args) -> dict:
     return out
 
 
-def score(ckpt: str, maps: list[str], procs: int, seed: int = 0) -> dict:
+def score(ckpt: str, maps: list[str], procs: int, seed: int = 0, ticks: int = 0) -> dict:
     ctx = mp.get_context("spawn")
     with ctx.Pool(procs) as pool:
-        rows = pool.map(play_one, [(ckpt, m, seed) for m in maps])
+        rows = pool.map(play_one, [(ckpt, m, seed, ticks) for m in maps])
     total = sum(r["weighted"] for r in rows)
     by_tier = {}
     for r in rows:
@@ -140,14 +151,20 @@ def main() -> None:
     ap.add_argument("target", help="a checkpoint .pt, or a run's ckpt/ folder with --best")
     ap.add_argument("--maps", default=DEFAULT_MAPS)
     ap.add_argument("--procs", type=int, default=max(1, min(10, (os.cpu_count() or 2) - 2)))
+    ap.add_argument("--outside", action="store_true", help="test on real Freedoom levels that ship with ViZDoom (not our generated maps)")
+    ap.add_argument("--ticks", type=int, default=0, help="episode length override (35 ticks = 1 second)")
     ap.add_argument("--best", action="store_true", help="score every checkpoint in the folder; copy the best to best.pt")
     args = ap.parse_args()
-    maps = sorted(glob.glob(str(ROOT / args.maps) if not os.path.isabs(args.maps) else args.maps))
+    if args.outside:
+        maps, args.ticks = outside_maps(), args.ticks or 4200
+    else:
+        maps = sorted(glob.glob(str(ROOT / args.maps) if not os.path.isabs(args.maps) else args.maps))
     if not maps:
         raise SystemExit(f"no maps matched {args.maps}")
 
     targets = sorted(glob.glob(os.path.join(args.target, "ckpt_*.pt"))) if args.best else [args.target]
-    history_path = Path(args.target if args.best else os.path.dirname(args.target)) / "scores.jsonl"
+    history_path = Path(args.target if args.best else os.path.dirname(args.target)) / (
+        "scores_outside.jsonl" if args.outside else "scores.jsonl")
     done = {}
     if history_path.exists():
         for line in history_path.read_text().splitlines():
@@ -155,7 +172,7 @@ def main() -> None:
             done[r["ckpt"]] = r
     best = None
     for t in targets:
-        res = done.get(t) or score(t, maps, args.procs)
+        res = done.get(t) or score(t, maps, args.procs, ticks=args.ticks)
         if t not in done:
             with history_path.open("a") as f:
                 f.write(json.dumps({k: v for k, v in res.items() if k != "rows"}) + "\n")
