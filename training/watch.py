@@ -11,7 +11,10 @@ On the right: the agent's OWN memory map (memory_map.py), drawn only from what i
 its own self-tracking, never from the game's real map. Brains without a map still get it drawn
 here, so you can see what the next run will be able to remember.
 
-Keys: N = next map, Space = pause, Esc = quit.
+On the game view: a coloured overlay of what the agent SENSES (rays: doors blue, locked doors red;
+visible things: health/ammo green, keys yellow, enemies red), drawn only from its observation.
+
+Keys: N = next map, O = overlay on/off, Space = pause, Esc = quit.
 """
 
 from __future__ import annotations
@@ -45,6 +48,56 @@ COLOURS = [(FREE, (55, 58, 70)), (TRAIL, (70, 130, 255)), (WALL, (225, 225, 225)
            (LOCKED, (255, 60, 60)), (KEY, (255, 220, 40)), (ENEMY, (230, 70, 230))]
 LEGEND = [("open floor", (55, 58, 70)), ("its path", (70, 130, 255)), ("wall", (225, 225, 225)),
           ("door", (60, 210, 90)), ("locked door", (255, 60, 60)), ("key", (255, 220, 40)), ("enemy", (230, 70, 230))]
+
+
+# ------------------------------------------------------------------ "what the agent senses" overlay
+W, H = 160 * SCALE, 120 * SCALE
+FOCAL = W / 2  # 90 degree horizontal field of view
+EYE, WALL_H = 41.0, 128.0  # Doom eye height; a typical wall height (only for drawing)
+RAY_COLOURS = {2: (60, 140, 255), 3: (255, 50, 50)}  # door: blue, locked door: red (walls left plain)
+THING = {1: ("enemy", (255, 40, 40), 56), 2: ("enemy", (255, 40, 40), 56), 3: ("enemy", (255, 40, 40), 56),
+         5: ("health", (40, 230, 90), 20), 6: ("armor", (40, 230, 90), 20), 7: ("ammo", (40, 230, 90), 16),
+         8: ("weapon", (40, 230, 90), 16), 9: ("KEY", (255, 220, 40), 20), 10: ("barrel", (255, 150, 40), 32),
+         4: ("shot", (230, 70, 230), 12)}
+
+
+def draw_sight(screen, font, obs: dict) -> None:
+    """Colour the 3D view using ONLY the agent's own sensors: its 64 rays (doors, locked doors) and
+    its list of visible things. Nothing here comes from the game's internal state."""
+    over = pygame.Surface((W, H), pygame.SRCALPHA)
+    dist = np.asarray(obs["rays"]["distance"]) * 1024.0
+    hit = np.asarray(obs["rays"]["hit_type"])
+    ray_ang = np.arange(64) * (2 * np.pi / 64)
+    ray_ang = (ray_ang + np.pi) % (2 * np.pi) - np.pi  # left is positive
+    for col in range(0, W, 4):
+        ang = np.arctan((W / 2 - col - 2) / FOCAL)
+        i = int(np.argmin(np.abs((ray_ang - ang + np.pi) % (2 * np.pi) - np.pi)))
+        c = RAY_COLOURS.get(int(hit[i]))
+        if c is None or dist[i] >= 1023 or dist[i] < 40:  # < 40: standing inside a doorway
+            continue
+        alpha = int(np.clip(30 + dist[i] / 3, 30, 120))  # faint up close, so the view stays readable
+        perp = max(dist[i] * np.cos(ang), 16.0)
+        top = H / 2 - (WALL_H - EYE) * FOCAL / perp
+        bottom = H / 2 + EYE * FOCAL / perp
+        pygame.draw.rect(over, c + (alpha,), (col, max(top, 0), 4, min(bottom, H) - max(top, 0)))
+    ve = obs["visible_entities"]
+    for f, t, m in zip(ve["features"], ve["entity_type"], ve["mask"]):
+        if not m or int(t) not in THING:
+            continue
+        name, c, size = THING[int(t)]
+        d, ang = f[0] * 1024.0, np.arctan2(f[1], f[2])
+        if abs(ang) > np.pi / 4 + 0.1:
+            continue
+        perp = max(d * np.cos(ang), 16.0)
+        x = W / 2 - np.tan(ang) * FOCAL
+        h = size * FOCAL / perp
+        bottom = H / 2 + EYE * FOCAL / perp
+        w = max(h * 0.7, 10)
+        rect = pygame.Rect(int(x - w / 2), int(bottom - h), int(w), int(h))
+        pygame.draw.rect(over, c + (60,), rect)
+        pygame.draw.rect(over, c + (255,), rect, 2)
+        over.blit(font.render(f"{name} {d:.0f}", True, c), (rect.x, max(rect.y - 20, 0)))
+    screen.blit(over, (0, 0))
 
 
 def draw_map(screen, font, mm: MemoryMap, x0: int) -> None:
@@ -102,6 +155,7 @@ def main() -> None:
     ap.add_argument("--run", default="runs/run1", help="training run whose newest save to watch")
     ap.add_argument("--ckpt", default="", help="watch this exact save instead of the newest")
     ap.add_argument("--outside", action="store_true", help="real Freedoom levels instead of our test maps")
+    ap.add_argument("--plain", action="store_true", help="hide the coloured 'what the agent senses' overlay")
     ap.add_argument("--fps", type=int, default=9, help="decisions per second (9 = real game speed)")
     args = ap.parse_args()
     torch.set_num_threads(1)
@@ -111,6 +165,8 @@ def main() -> None:
     pygame.init()
     screen = pygame.display.set_mode((160 * SCALE + PANEL, max(120 * SCALE + 40, PANEL + 130)))
     font = pygame.font.SysFont("monospace", 18)
+    small = pygame.font.SysFont("monospace", 15, bold=True)
+    sight = not args.plain
     clock = pygame.time.Clock()
 
     for i in range(10**9):
@@ -137,6 +193,8 @@ def main() -> None:
                     return
                 if ev.type == pygame.KEYDOWN and ev.key == pygame.K_n:
                     skip = True
+                if ev.type == pygame.KEYDOWN and ev.key == pygame.K_o:
+                    sight = not sight
                 if ev.type == pygame.KEYDOWN and ev.key == pygame.K_SPACE:
                     paused = not paused
             if skip:
@@ -154,6 +212,8 @@ def main() -> None:
             img = pygame.transform.scale(pygame.surfarray.make_surface(frame), (160 * SCALE, 120 * SCALE))
             screen.fill((0, 0, 0))
             screen.blit(img, (0, 0))
+            if sight:
+                draw_sight(screen, small, obs)
             hud = (f"{label}  |  brain {Path(ckpt).stem}  |  step {step}  "
                    f"hp {max(ps['health'], 0):.0f}  kills {ps['kills']}  keys {int(np.sum(ps['keys']))}")
             screen.blit(font.render(hud, True, (230, 230, 230)), (8, 120 * SCALE + 10))
