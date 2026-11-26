@@ -161,7 +161,7 @@ class _Slot:
 
     def step(self, a: int):
         real = MIRROR_ACTION[a] if self.mirrored else a
-        r = self.tracker.shot(self.last_obs, bool(ACTIONS[real][ATTACK_BUTTON]))
+        r = self.tracker.shot(self.last_obs, bool(ACTIONS[real][ATTACK_BUTTON])) + self.tracker.look(self.last_obs)
         obs, _, term, trunc, _ = self.env.step(ACTIONS[real])
         self.last_obs = obs
         ps = self.env.privileged_state()

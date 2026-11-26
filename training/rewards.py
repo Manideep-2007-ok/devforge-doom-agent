@@ -32,6 +32,10 @@ class RewardWeights:
     step: float = -0.001
     wasted_shot: float = -0.02  # firing with no enemy in front (25 wasted shots = one kill)
     cell_size: float = 64.0
+    revisit: float = -0.02  # entering a cell for the 3rd+ time (going back once is free): stops circling
+    key_pull: float = 0.001  # per map unit closer to the nearest VISIBLE key (walking away takes it back)
+    too_close: float = -0.01  # per step with an enemy within arm's reach: shoot from a distance
+    close_range: float = 128.0
 
 
 @dataclass
@@ -42,13 +46,16 @@ class RewardTracker:
 
     def reset(self, ps: dict) -> None:
         self.cells: set[tuple[int, int]] = {self._cell(ps)}
+        self.entries: dict[tuple[int, int], int] = {self._cell(ps): 1}
+        self.last_cell = self._cell(ps)
+        self.key_d: float | None = None
         self.opened: set[int] = set()
         self.kills = ps["kills"]
         self.damage = ps["damage_taken"]
         self.health = ps["health"]
         self.keys = np.asarray(ps["keys"]).copy()
-        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0)
-        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0)
+        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0, revisits=0, close=0)
+        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0)
 
     def shot(self, obs: dict, fired: bool) -> float:
         """Small cost for pulling the trigger when no enemy is roughly straight ahead."""
@@ -58,6 +65,26 @@ class RewardTracker:
         self.stats["wasted"] += 1
         self.stats["ret"] += self.w.wasted_shot
         return self.w.wasted_shot
+
+    def look(self, obs: dict) -> float:
+        """Rewards from what the agent can see (its own observation): key pull and enemy too close."""
+        ve = obs["visible_entities"]
+        f, t, m = ve["features"], ve["entity_type"], ve["mask"]
+        d = np.asarray(f[:, 0], np.float64) * 1024.0
+        r = 0.0
+        keys = (m > 0) & (t == KEY_TYPE)
+        kd = float(d[keys].min()) if keys.any() else None
+        if kd is not None and self.key_d is not None:  # potential-based: back-and-forth adds up to zero
+            pull = self.w.key_pull * (self.key_d - kd)
+            r += pull
+            self.parts["pull"] += pull
+        self.key_d = kd
+        if ((m > 0) & np.isin(t, ENEMY_TYPES) & (d < self.w.close_range)).any():
+            r += self.w.too_close
+            self.parts["close"] += self.w.too_close
+            self.stats["close"] += 1
+        self.stats["ret"] += r
+        return r
 
     def _cell(self, ps: dict) -> tuple[int, int]:
         return int(ps["x"] // self.w.cell_size), int(ps["y"] // self.w.cell_size)
@@ -73,6 +100,14 @@ class RewardTracker:
             r += w.new_cell
             p["cell"] += w.new_cell
             s["cells"] += 1
+        if c != self.last_cell:
+            n = self.entries.get(c, 0) + 1
+            self.entries[c] = n
+            if n > 2:
+                r += w.revisit
+                p["revisit"] += w.revisit
+                s["revisits"] += 1
+            self.last_cell = c
 
         dk = ps["kills"] - self.kills
         if dk > 0:
@@ -160,6 +195,7 @@ class RewardTracker:
 PRIV_DIM = 6
 
 ENEMY_TYPES = (1, 2, 3)  # enemy_melee, enemy_hitscan, enemy_projectile (doom_env.spaces.ENTITY_TYPES)
+KEY_TYPE = 9
 AIM_SIN = 0.26  # about 15 degrees either side of straight ahead
 
 
