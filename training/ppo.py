@@ -60,6 +60,7 @@ class Config:
     episodes_per_map: int = 8  # loading a map costs ~170 ms vs ~1 ms to restart the same one
     mirror_prob: float = 0.5
     asym_critic: bool = True
+    overlap: bool = True  # two game groups take turns: GPU decides for one while the other plays
     seed: int = 0
     resume: str = ""
     save_every_min: float = 10.0
@@ -195,6 +196,23 @@ class VecEnv:
             self.procs.append(p)
         self.k = cfg.envs_per_worker
         self.n = cfg.workers * self.k
+        self.set_groups(1)
+
+    def set_groups(self, g: int):
+        """Split the workers into g contiguous groups; group i owns env columns self.slices[i]."""
+        w = len(self.remotes)
+        cuts = [round(i * w / g) for i in range(g + 1)]
+        self.groups = [list(range(cuts[i], cuts[i + 1])) for i in range(g)]
+        self.slices = [slice(cuts[i] * self.k, cuts[i + 1] * self.k) for i in range(g)]
+
+    def step_async(self, g: int, actions: np.ndarray):
+        for j, i in enumerate(self.groups[g]):
+            self.remotes[i].send(("step", actions[j * self.k : (j + 1) * self.k]))
+
+    def step_wait(self, g: int):
+        res = [self.remotes[i].recv() for i in self.groups[g]]
+        o, p, rew, done, st = zip(*res)
+        return concat(list(o)), np.concatenate(p), np.concatenate(rew), np.concatenate(done), [x for s in st for x in s]
 
     def reset(self):
         for r in self.remotes:
@@ -285,6 +303,7 @@ def train(cfg: Config):
     print(f"parameters: {sum(p.numel() for p in net.parameters()):,}", flush=True)
 
     venv = VecEnv(maps, cfg, RewardWeights())
+    venv.set_groups(2 if cfg.overlap and cfg.workers >= 2 else 1)
     N, T = venv.n, cfg.rollout
     obs, priv = venv.reset()
     prev_a = np.zeros(N, np.int64)
@@ -307,40 +326,76 @@ def train(cfg: Config):
                 g["lr"] = lr
 
             # ---------------- 1. COLLECT
-            buf = {k: [] for k in keys}
-            b_act, b_logp, b_val, b_rew, b_first, b_priv, b_h = [], [], [], [], [], [], []
+            # Games are split into G groups. While one group's games play their move on the CPU, the GPU
+            # already picks the next move for the other group, so neither side sits waiting.
+            # Same policy, same data: only the order of the work changes.
+            G = len(venv.groups)
+            buf = {k: np.zeros((T,) + obs[k].shape, obs[k].dtype) for k in obs}
+            buf["prev_action"] = np.zeros((T, N), np.int64)
+            b_act = np.zeros((T, N), np.int64)
+            b_logp = np.zeros((T, N), np.float32)
+            b_val = np.zeros((T, N), np.float32)
+            b_rew = np.zeros((T, N), np.float32)
+            b_first = np.zeros((T, N), np.float32)
+            b_priv = np.zeros((T, N, priv.shape[1]), np.float32)
+            b_h = torch.zeros(T, N, net.hidden, device=dev)
+            t_of = [0] * G
             t0 = time.time()
             net.eval()
             env_s = 0.0
-            for _ in range(T):
-                x = dict(obs, prev_action=prev_a)
+
+            def decide(g):
+                """Pick actions for group g at its current step and send them to its games."""
+                nonlocal h
+                t, sl = t_of[g], venv.slices[g]
+                x = {k: obs[k][sl] for k in obs}
+                x["prev_action"] = prev_a[sl]
                 for k in keys:
-                    buf[k].append(x[k])
-                b_first.append(first)
-                b_priv.append(priv)
+                    buf[k][t, sl] = x[k]
+                b_first[t, sl] = first[sl]
+                b_priv[t, sl] = priv[sl]
                 with torch.no_grad():
                     xt = {k: v.unsqueeze(0) for k, v in to_torch(x, dev).items()}
-                    ft = torch.as_tensor(first, device=dev).unsqueeze(0)
-                    b_h.append(h * (1 - ft).unsqueeze(-1))  # memory at the START of this step
-                    logits, mem, h = net(xt, h, ft)
+                    ft = torch.as_tensor(first[sl], device=dev).unsqueeze(0)
+                    hg = h[:, sl] * (1 - ft).unsqueeze(-1)
+                    b_h[t, sl] = hg[0]  # memory at the START of this step
+                    logits, mem, hg = net(xt, hg, ft)
+                    h[:, sl] = hg
                     dist = torch.distributions.Categorical(logits=logits[0])
                     a = dist.sample()
-                    v = net.value_of(mem[0], torch.as_tensor(priv, device=dev) if cfg.asym_critic else None)
+                    v = net.value_of(mem[0], torch.as_tensor(priv[sl], device=dev) if cfg.asym_critic else None)
                 a_np = a.cpu().numpy()
-                b_act.append(a_np)
-                b_logp.append(dist.log_prob(a).cpu().numpy())
-                b_val.append(v.cpu().numpy())
-                te = time.time()
-                obs, priv, rew, done, stats = venv.step(a_np)
-                env_s += time.time() - te
-                disc_ret = disc_ret * cfg.gamma + rew
-                ret_std.update(disc_ret)
-                disc_ret *= 1 - done
-                b_rew.append(rew)
-                recent += stats
-                prev_a = np.where(done > 0, 0, a_np)
-                first = done
-                steps += N
+                b_act[t, sl] = a_np
+                b_logp[t, sl] = dist.log_prob(a).cpu().numpy()
+                b_val[t, sl] = v.cpu().numpy()
+                venv.step_async(g, a_np)
+
+            def collect(g):
+                """Receive group g's results for its current step."""
+                t, sl = t_of[g], venv.slices[g]
+                o, p, rew, done, stats = venv.step_wait(g)
+                for k in obs:
+                    obs[k][sl] = o[k]
+                priv[sl] = p
+                disc_ret[sl] = disc_ret[sl] * cfg.gamma + rew
+                ret_std.update(disc_ret[sl])
+                disc_ret[sl] *= 1 - done
+                b_rew[t, sl] = rew
+                recent.extend(stats)
+                prev_a[sl] = np.where(done > 0, 0, b_act[t, sl])
+                first[sl] = done
+                t_of[g] += 1
+
+            for g in range(G):
+                decide(g)
+            for t in range(T):
+                for g in range(G):
+                    te = time.time()
+                    collect(g)
+                    env_s += time.time() - te
+                    if t < T - 1:
+                        decide(g)
+            steps += N * T
             collect_s = time.time() - t0
 
             with torch.no_grad():
@@ -383,7 +438,7 @@ def train(cfg: Config):
             d_ret = torch.as_tensor(seqs(ret), device=dev)
             d_first = torch.as_tensor(seqs(fst), device=dev)
             d_priv = torch.as_tensor(seqs(np.stack(b_priv)), device=dev)
-            h_all = torch.stack(b_h)[:, 0]  # (T, N, H)
+            h_all = b_h  # (T, N, H)
             d_h0 = h_all.reshape(S, L, N, -1)[:, 0].reshape(1, S * N, -1)  # memory at each sequence start
 
             n_seq = S * N
