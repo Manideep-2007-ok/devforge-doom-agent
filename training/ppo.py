@@ -527,9 +527,7 @@ def train(cfg: Config):
             if time.time() - last_save > cfg.save_every_min * 60:
                 p = run_dir / "ckpt" / f"ckpt_{steps // 1000:08d}k.pt"
                 save_checkpoint(p, net, opt, steps, ret_std, cfg)
-                ckpts = sorted((run_dir / "ckpt").glob("ckpt_*.pt"))
-                for old in ckpts[:-5]:  # keep the latest 5 (the best one is copied elsewhere by the scorer)
-                    old.unlink()
+                # every save is kept (about 11 MB each): an early save can turn out to be the best one
                 last_save = time.time()
     finally:
         save_checkpoint(run_dir / "ckpt" / f"ckpt_{steps // 1000:08d}k.pt", net, opt, steps, ret_std, cfg)

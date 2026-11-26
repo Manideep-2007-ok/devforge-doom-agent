@@ -189,8 +189,14 @@ def main() -> None:
             best = res
     if args.best and best:
         dst = Path(args.target) / "best.pt"
-        shutil.copy(best["ckpt"], dst)
-        print(f"\nBEST: {best['ckpt']}  score {best['score']:.1f}  -> copied to {dst}")
+        record = Path(args.target) / "best.json"  # never replace best.pt with a worse brain
+        prev = json.loads(record.read_text()) if record.exists() and dst.exists() else None
+        if prev and prev["score"] >= best["score"]:
+            print(f"\nBEST: {prev['ckpt']}  score {prev['score']:.1f}  (kept in {dst}; nothing newer beats it)")
+        else:
+            shutil.copy(best["ckpt"], dst)
+            record.write_text(json.dumps({"ckpt": best["ckpt"], "score": best["score"]}))
+            print(f"\nBEST: {best['ckpt']}  score {best['score']:.1f}  -> copied to {dst}")
 
 
 if __name__ == "__main__":
