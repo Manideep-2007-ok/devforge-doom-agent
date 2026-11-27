@@ -12,7 +12,7 @@ same observations the agent receives during evaluation.
 | `training/mapgen.py` | Random training and test maps in tiers, each checked to be solvable |
 | `training/exit_finder.py` | Reads the exit's position from a map file (training reward only) |
 | `training/score.py` | Mini-scorer: plays a brain on test maps and gives one comparable number |
-| `training/final_pick.py` | Chooses the brain to submit, using four test sets |
+| `training/final_pick.py` | Chooses the brain to submit, using five test sets |
 | `training/count_shots.py` | Counts shots fired with no enemy in front |
 | `training/watch.py` | Watch a brain play, with its senses and its own memory map drawn |
 | `training/check_memory_map.py` | Measures how far the memory map's self-tracking drifts |
@@ -52,7 +52,7 @@ uv run python training/mapgen.py --out maps/gen/heldout --per-tier 5   --seed 99
 ```
 
 Tiers: 1 combat, 2 multi-room, 3 key + locked door, 4 two keys and two locked doors, 5 "key school"
-(key near the start, locked door right after it; add it with `--tiers 1,2,3,4,5`). Each map is
+(key near the start, locked door right after it; add it with `--tiers 1,2,3,4,5`). `--switch-exit` puts the exit on a wall switch (press USE), as in real Doom levels. Each map is
 checked before saving: the exit is reachable, each locked door really blocks it, and each key comes
 before its door. Each map also gets a `.json` with its tier and time limit (2,100–4,200 ticks).
 `maps/gen/` is not committed: the same seeds make the same maps. Never train on the held-out maps.
@@ -170,7 +170,17 @@ Computed from `env.privileged_state()`, in training only. Values are in `rewards
 | Enemy within 128 units | −0.02 per step |
 | Fireball or rocket within 160 units | −0.05 per step |
 | Fire with no enemy ahead | −0.02 |
+| A bullet-firing enemy sees you and you are not aiming at it | −0.01 per step (−0.03 for a chaingunner) |
+| Hurt by something out of view, then an enemy comes into view within 12 steps | +0.15 |
+| Kill a chaingunner | +1 on top of the kill |
+| Press USE with a closed door just ahead | +0.05 (at most once per 12 steps, 8 per game) |
+| Press USE within 96 units of the exit | +0.1 (at most 5 per game) |
+| Stand within 112 units of a locked door without its key | −0.02 per step |
+| Move less than 32 units over 24 steps | −0.01 per step |
+| Pick up a better weapon (shotgun, chaingun) | +1 to +1.5, once per upgrade |
 | Get closer to a visible key | +0.001 per unit (potential-based) |
+| Get closer to a visible weapon, until holding a chaingun | +0.002 per unit (potential-based) |
+| Holding a key: get closer to the nearest locked door it opens | +0.001 per unit (potential-based; doors read from the map file) |
 | Get closer to the exit, within 512 units | +0.004 per unit (potential-based; exit read from the map file) |
 | Die | −3, minus up to 2 more for dying early |
 | Run out of time | −1 |

@@ -12,11 +12,11 @@ It fights, explores, picks up keycards, opens doors and looks for the exit.
 ![ViZDoom 1.3.3](assets/badges/vizdoom.svg)
 ![Stable-Baselines not used](assets/badges/no-sb3.svg)
 
-| 🧠 Weights | ⚡ Per decision | 🗺️ Held-out score | 📏 Limit per decision |
+| 🧠 Weights | ⚡ Per decision | 🏋️ Training (submitted brain) | 📏 Limit per decision |
 |:---:|:---:|:---:|:---:|
-| **1.96 M** | **~3 ms** on 1 CPU thread | **4,459** | 40 ms |
+| **1.96 M** | **~3 ms** on 1 CPU thread | **37 M** game steps | 40 ms |
 
-[How it plays](#plays) · [Training](#training) · [Testing](#testing) · [Results](#results) · [Rules](#rules) · [Run it](#run)
+[How it plays](#plays) · [Training](#training) · [Testing](#testing) · [Results](#results) · [Rules](#rules) · [Run it](#run) · [Reproduce](#reproduce)
 
 </div>
 
@@ -84,14 +84,14 @@ flowchart LR
 |---|---|
 | **Play** | 10 processes × 8 games, 128 moves each, with the current network |
 | **Score each move** | A critic estimates how well things should go; each move's *advantage* is how much better or worse it turned out (GAE, γ = 0.995, λ = 0.95) |
-| **Update** | Clipped PPO (0.2), 4 passes × 4 minibatches on 32-move sequences, so the memory learns too. Adam, learning rate 3e-4 → 1e-4, entropy bonus 0.01 → 0.001 |
+| **Update** | Clipped PPO (0.2), 4 passes × 4 minibatches on 32-move sequences, so the memory learns too. Adam; learning rate 3e-4 → 1e-4 and entropy bonus 0.01 → 0.001 in Run 1, then 1e-4 → 5e-5 and 0.005 → 0.001 in Run 2 |
 
 ### What we added on top of plain PPO
 
 | | Technique | Why |
 |---|---|---|
 | 🔍 | **Asymmetric critic** | In training only, the critic also sees hidden facts (time used, health, kills, keys, doors, area explored). Better advantage estimates; the policy never sees them. |
-| 🏗️ | **Procedural maps** ([`mapgen.py`](training/mapgen.py)) | Random levels in tiers like the hidden suite: combat, multi-room, key + locked door, double-key gauntlet, plus a small "key school". Each map is checked before saving: exit reachable, each locked door really blocks it, each key before its door. |
+| 🏗️ | **Procedural maps** ([`mapgen.py`](training/mapgen.py)) | Random levels in tiers like the hidden suite: combat, multi-room, key + locked door, double-key gauntlet, plus a small "key school". With `--switch-exit`, the exit is a wall switch you press, as in real Doom levels. Each map is checked before saving: exit reachable, each locked door really blocks it, each key before its door. |
 | 🪞 | **Left-right mirroring** | Half the games are mirrored (rays, things, camera, map and moves all flipped), doubling the variety. |
 | 🎯 | **Prioritized maps** (`--plr`) | Maps it wins about half the time are picked more often, because they teach the most; half of all picks stay random. |
 | 🎁 | **Reward shaping** ([`rewards.py`](training/rewards.py)) | Follows the scoring priorities: exit > keys and doors > exploring > combat. "Once per" rules mean nothing can be farmed. |
@@ -116,8 +116,20 @@ flowchart LR
 | Entering the same area a 3rd+ time | −0.02 (stops circling) |
 | Enemy within arm's reach | −0.02 per move |
 | Fireball or rocket within 160 units | −0.05 per move (step aside) |
+| A bullet-firing enemy can see it and it isn't aiming at that enemy | −0.01 per move (−0.03 for a chaingunner) |
+| Hurt by something out of view, then turns and finds it within 12 moves | +0.15 |
+| Chaingunner killed | +1 on top of the normal kill |
+| Pressing USE right in front of a closed door | +0.05 (limited per game) |
+| Pressing USE next to the exit (exit switches need USE) | +0.1 (at most 5 per game) |
+| Standing next to a locked door without its key | −0.02 per move |
+| Barely moving for 24 moves (stuck) | −0.01 per move |
+| Picking up a better weapon (shotgun, chaingun) | +1 to +1.5, once per upgrade |
 | Getting closer to a **visible** key | +0.001 per map unit (potential-based: going back and forth adds up to zero) |
+| Getting closer to a visible weapon, until it has a chaingun | +0.002 per map unit (potential-based) |
+| Holding a key: getting closer to the locked door it opens | +0.001 per map unit (potential-based; door positions read from the map file, training only) |
 | Getting closer to the exit, within 512 units | +0.004 per map unit (potential-based; exit position read from the map file, training only) |
+
+The combat, door, weapon and stuck terms were added partway through Run 2, as we saw where the agent struggled.
 
 </details>
 
@@ -130,31 +142,46 @@ flowchart LR
   multiplies by tier, and runs the real `DoomAgent` on one CPU thread.
 - **Held-out maps:** 20 generated maps (5 per tier), never used for training, each played 3 times
   with different seeds.
-- **Final pick** ([`final_pick.py`](training/final_pick.py)) compares candidates on four sets: our
-  held-out maps, freshly generated maps, the Freedoom levels that ship with ViZDoom, and community map
-  packs. A candidate must beat the current submission on average, with no errors and within the time limit.
+- **Final pick** ([`final_pick.py`](training/final_pick.py)) compares saved brains on five sets: our
+  held-out maps, freshly generated maps, maps with switch exits, the Freedoom levels that ship with
+  ViZDoom, and community map packs. Every candidate must run with no errors and within the time limit.
 
 <a name="results"></a>
 
 ## 📈 Results
 
-**Score on our held-out maps** (20 maps × 3 games)
+**The submitted brain: 37.0M steps of Run 2**
+
+Training went on well past the table below, so we compared the saved brains at the end. Two stood out:
+
+| Brain | Evaluation-style maps | Five-set final pick |
+|---|---:|---:|
+| Run 2 · **37.0M** steps (submitted) | **3,732** | ×1.32 |
+| Run 2 · 49.0M steps | 3,408 | ×1.45 |
+
+**Evaluation-style maps** are 12 new levels built to match [`docs/EVALUATION.md`](docs/EVALUATION.md):
+3 per tier for tiers 1–4, two with a floor exit and one with an exit switch, each played twice. They were
+made with `mapgen.py --seed 9090` (floor exits) and `--seed 9191 --switch-exit`, and neither run trained on them.
+The 49.0M brain was slightly ahead on the five-set final pick, which includes real Doom maps. We submitted
+the 37.0M brain because the evaluation-style maps are the closest match to how judging works.
+
+**Score on our held-out maps during training** (20 maps × 3 games)
 
 | Brain | Score | |
 |---|---:|---|
-| Run 1 · 16.6M moves | 2,140 | `██████████` |
-| Run 2 · 1.25M moves | 3,227 | `███████████████` |
-| Run 2 · 5.66M moves | 4,253 | `████████████████████` |
-| Run 2 · 9.20M moves | **4,459** | `█████████████████████` |
+| Run 1 · 16.6M steps | 2,140 | `██████████` |
+| Run 2 · 1.25M steps | 3,227 | `███████████████` |
+| Run 2 · 5.66M steps | 4,253 | `████████████████████` |
+| Run 2 · 9.20M steps | 4,459 | `█████████████████████` |
 
-<!-- Update this table if the final pick changes the submitted brain. -->
+<!-- Update these tables if the final pick changes the submitted brain. -->
 
 **What each input is worth** (Run 1 brain, one input switched off at a time)
 
 | Switched off | Score |
 |---|---:|
 | Nothing | 2,140 |
-| 🗺️ Visible things | 1,589 |
+| 👾 Visible things | 1,589 |
 | 🧠 Memory (reset every move) | 1,148 |
 | 📡 Rays | −617 |
 
@@ -193,11 +220,54 @@ uv run python training/watch.py --ckpt submission/weights/model.pt     # watch i
 
 Training, resuming and exporting: see [`training/README.md`](training/README.md).
 
+<a name="reproduce"></a>
+
+## 🔁 How the submitted brain was made
+
+**Maps**
+
+```bash
+uv run python training/mapgen.py --out maps/gen/train    --per-tier 150  --seed 1
+uv run python training/mapgen.py --out maps/gen/train2   --per-tier 1200 --tiers 1,2,3,4,5 --seed 7
+uv run python training/mapgen.py --out maps/gen/train_sw --per-tier 300  --seed 21 --switch-exit   # once per tier
+```
+
+Run 1 also used 4 hand-built curriculum maps (`maps/curriculum/train`), which are not in this repository.
+
+**Run 1:** rays, visible things and body only, without `--plr`, on 304 maps. It stopped at 38.0M steps.
+
+```bash
+uv run --group train python training/ppo.py --name run1 \
+    --maps "maps/gen/train/t1/*.wad,maps/gen/train/t2/*.wad,maps/curriculum/train/*.wad" \
+    --total-steps 40e6 --save-every-min 10
+```
+
+**Run 2:** adds the memory map and camera, with `--plr` on, starting from Run 1's last save.
+
+```bash
+uv run --group train python training/ppo.py --name run2 --maps "maps/gen/train/*/*.wad" \
+    --memory-map true --eye true --plr true --init-from runs/run1/ckpt/<last>.pt \
+    --total-steps 50e6 --lr 1e-4 --lr-end 5e-5 --ent-coef 0.005 --ent-end 0.001
+```
+
+It started on `maps/gen/train` (754 maps). From 18.2M steps it resumed on a weighted mix of `train`, `train2`
+and `train_sw` (10,804 maps), with harder tiers picked more often, up to 6× for switch-exit tier 4. We stopped
+it at 49.0M steps and exported the 37.0M save (`ckpt_00037048k.pt`) with `training/export.py`. `validate.py` passes.
+
+> [!NOTE]
+> Some reward terms were added while Run 2 was running (doors, chaingunners, switch exits, weapon ranking).
+> A rerun with today's code uses the same setup but won't give the same weights bit for bit.
+
+**Hardware and time:** one laptop with an Intel i5-12450HX (8 cores, 12 threads), an RTX 3050 6 GB laptop GPU
+and 16 GB RAM, running 80 game copies at about 2,400–3,200 steps per second. Run 1 took about 4 hours and
+Run 2 about 10 hours, so about 14 hours in total.
+
 ## 📁 Repository layout
 
 ```
 submission/    the evaluated agent: agent.py, doom_net.py, features.py, memory_map.py, weights/ (Git LFS)
-training/      ppo.py, rewards.py, mapgen.py, exit_finder.py, score.py, final_pick.py, watch.py, export.py
+training/      ppo.py, rewards.py, mapgen.py, exit_finder.py, score.py, final_pick.py, watch.py, export.py,
+               count_shots.py, check_memory_map.py, bench_speed.py
 env/           the organisers' ViZDoom wrapper (doom_env); the scorer uses its own copy
 docs/          the organisers' contract, rules, evaluation and submission guide
 validate.py    the organisers' submission validator
