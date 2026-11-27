@@ -45,6 +45,13 @@ class RewardWeights:
     exit_radius: float = 512.0
     door_pull: float = 0.001  # with a key in hand: per map unit closer to the nearest unopened locked door
     door_radius: float = 2048.0
+    wrong_door: float = -0.02  # per step next to (within 112 units of) a locked door it has NO key for
+    wrong_door_range: float = 112.0
+    use_door: float = 0.05  # pressing USE while a closed door is right in front (doors open only with USE
+    use_door_range: float = 80.0  #   and shut again after ~4 s); max once per 12 steps, 8 times per game
+    stuck: float = -0.01  # per step after moving less than 32 units in the last 24 steps (pinned at a door, a wall)
+    stuck_steps: int = 24
+    stuck_dist: float = 32.0
 
 
 @dataclass
@@ -62,13 +69,15 @@ class RewardTracker:
         self.key_d: float | None = None
         self.exit_phi = self._exit_phi(ps)
         self.door_phi, self.door_target = None, None
+        self.trail = []
+        self.length_now, self.last_use = 0, -100
         self.opened: set[int] = set()
         self.kills = ps["kills"]
         self.damage = ps["damage_taken"]
         self.health = ps["health"]
         self.keys = np.asarray(ps["keys"]).copy()
-        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0, revisits=0, close=0, exit_d=-1.0, dodge=0, exposed=0, chaingun=0)
-        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0, exit_pull=0.0, dodge=0.0, door_pull=0.0, exposed=0.0)
+        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0, revisits=0, close=0, exit_d=-1.0, dodge=0, exposed=0, chaingun=0, wrong_door=0, stuck=0, use_door=0)
+        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0, exit_pull=0.0, dodge=0.0, door_pull=0.0, exposed=0.0, wrong_door=0.0, stuck=0.0, use_door=0.0)
 
     def shot(self, obs: dict, fired: bool) -> float:
         """Small cost for pulling the trigger when no enemy is roughly straight ahead."""
@@ -79,7 +88,7 @@ class RewardTracker:
         self.stats["ret"] += self.w.wasted_shot
         return self.w.wasted_shot
 
-    def look(self, obs: dict, chaingunners=()) -> float:
+    def look(self, obs: dict, chaingunners=(), used: bool = False) -> float:
         """Rewards from what the agent can see (its own observation): key pull and enemy too close."""
         ve = obs["visible_entities"]
         f, t, m = ve["features"], ve["entity_type"], ve["mask"]
@@ -109,6 +118,15 @@ class RewardTracker:
                 r += self.w.chaingunner_extra
                 self.parts["exposed"] += self.w.chaingunner_extra
                 self.stats["chaingun"] += 1
+        if used and self.stats["use_door"] < 8 and self.length_now - self.last_use >= 12:
+            ht, rd = obs["rays"]["hit_type"], obs["rays"]["distance"]
+            mid = [-2, -1, 0, 1]  # rays go all the way round, ray 0 = straight ahead: these 4 = +-11 degrees
+            if ((ht[mid] == RAY_DOOR) & (rd[mid] * 1024.0 < self.w.use_door_range)).any():
+                r += self.w.use_door
+                self.parts["use_door"] += self.w.use_door
+                self.stats["use_door"] += 1
+                self.last_use = self.length_now
+        self.length_now += 1
         self.stats["ret"] += r
         return r
 
@@ -209,6 +227,24 @@ class RewardTracker:
             else:
                 self.door_phi = self.door_target = None
 
+        # Waiting at a locked door without its key never helps: go and find the key.
+        if self.doors_xy and not ps["finished"]:
+            for sec, x, y, ks in self.doors_xy:
+                if sec not in self.opened and not held[list(ks)].any() and np.hypot(ps["x"] - x, ps["y"] - y) < w.wrong_door_range:
+                    r += w.wrong_door
+                    p["wrong_door"] += w.wrong_door
+                    s["wrong_door"] += 1
+                    break
+
+        # Stuck: barely moved for a while (door that will not open, wall, corner).
+        self.trail.append((ps["x"], ps["y"]))
+        if len(self.trail) > w.stuck_steps:
+            self.trail.pop(0)
+            if not ps["finished"] and np.hypot(ps["x"] - self.trail[0][0], ps["y"] - self.trail[0][1]) < w.stuck_dist:
+                r += w.stuck
+                p["stuck"] += w.stuck
+                s["stuck"] += 1
+
         phi = self._exit_phi(ps)
         if phi is not None and self.exit_phi is not None and not ps["finished"]:
             pull = w.exit_pull * (phi - self.exit_phi)  # potential-based: circling near the exit adds up to zero
@@ -259,6 +295,7 @@ PRIV_DIM = 6
 ENEMY_TYPES = (1, 2, 3)  # enemy_melee, enemy_hitscan, enemy_projectile (doom_env.spaces.ENTITY_TYPES)
 KEY_TYPE = 9
 PROJECTILE_TYPE = 4
+RAY_DOOR = 2  # rays hit_type "door" (a normal, closed door)
 HITSCAN_TYPE = 2  # enemy_hitscan: zombieman, shotgunner, chaingunner (their bullets cannot be dodged)  # fireballs, rockets (doom_env.spaces.ENTITY_TYPES)
 AIM_SIN = 0.26  # about 15 degrees either side of straight ahead
 

@@ -35,6 +35,7 @@ from features import ACTIONS, MIRROR_ACTION, mirror, preprocess, small_rgb  # no
 from exit_finder import exit_point, locked_doors
 from rewards import PRIV_DIM, RewardTracker, RewardWeights  # noqa: E402
 
+USE_BUTTON = 7  # column of USE
 ATTACK_BUTTON = 6  # column of ATTACK in each ACTIONS row (doom_env.spaces.BUTTONS order)
 
 
@@ -184,7 +185,7 @@ class _Slot:
 
     def step(self, a: int):
         real = MIRROR_ACTION[a] if self.mirrored else a
-        r = self.tracker.shot(self.last_obs, bool(ACTIONS[real][ATTACK_BUTTON])) + self.tracker.look(self.last_obs, self._chaingunners())
+        r = self.tracker.shot(self.last_obs, bool(ACTIONS[real][ATTACK_BUTTON])) + self.tracker.look(self.last_obs, self._chaingunners(), bool(ACTIONS[real][USE_BUTTON]))
         obs, _, term, trunc, _ = self.env.step(ACTIONS[real])
         self.last_obs = obs
         ps = self.env.privileged_state()
