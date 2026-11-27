@@ -49,6 +49,8 @@ class RewardWeights:
     wrong_door_range: float = 112.0
     use_door: float = 0.05  # pressing USE while a closed door is right in front (doors open only with USE
     use_door_range: float = 80.0  #   and shut again after ~4 s); max once per 12 steps, 8 times per game
+    use_exit: float = 0.1  # pressing USE within 96 units of the exit (exit SWITCHES need USE); max 5 per game
+    use_exit_range: float = 96.0
     find_attacker: float = 0.15  # hurt with no enemy in view, then an enemy comes into view within 12 steps
     find_attacker_steps: int = 12  #   (turn round to face what is shooting you from behind)
     chaingunner_kill: float = 1.0  # extra on top of `kill` when a chaingunner dies (3x a normal kill)
@@ -75,13 +77,14 @@ class RewardTracker:
         self.trail = []
         self.length_now, self.last_use = 0, -100
         self.enemy_in_view, self.hurt_unseen, self.cg_n = False, 0, None
+        self.used_now = False
         self.opened: set[int] = set()
         self.kills = ps["kills"]
         self.damage = ps["damage_taken"]
         self.health = ps["health"]
         self.keys = np.asarray(ps["keys"]).copy()
-        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0, revisits=0, close=0, exit_d=-1.0, dodge=0, exposed=0, chaingun=0, wrong_door=0, stuck=0, use_door=0, found=0, cg_kills=0)
-        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0, exit_pull=0.0, dodge=0.0, door_pull=0.0, exposed=0.0, wrong_door=0.0, stuck=0.0, use_door=0.0, found=0.0, cg_kill=0.0)
+        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0, revisits=0, close=0, exit_d=-1.0, dodge=0, exposed=0, chaingun=0, wrong_door=0, stuck=0, use_door=0, found=0, cg_kills=0, use_exit=0)
+        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0, exit_pull=0.0, dodge=0.0, door_pull=0.0, exposed=0.0, wrong_door=0.0, stuck=0.0, use_door=0.0, found=0.0, cg_kill=0.0, use_exit=0.0)
 
     def shot(self, obs: dict, fired: bool) -> float:
         """Small cost for pulling the trigger when no enemy is roughly straight ahead."""
@@ -93,6 +96,7 @@ class RewardTracker:
         return self.w.wasted_shot
 
     def look(self, obs: dict, chaingunners=(), used: bool = False) -> float:
+        self.used_now = used
         """Rewards from what the agent can see (its own observation): key pull and enemy too close."""
         ve = obs["visible_entities"]
         f, t, m = ve["features"], ve["entity_type"], ve["mask"]
@@ -255,6 +259,13 @@ class RewardTracker:
                     p["wrong_door"] += w.wrong_door
                     s["wrong_door"] += 1
                     break
+
+        # Exit switches: USE pressed right next to the exit.
+        if self.used_now and self.exit_xy is not None and s["use_exit"] < 5 and not ps["finished"]:
+            if np.hypot(ps["x"] - self.exit_xy[0], ps["y"] - self.exit_xy[1]) < w.use_exit_range:
+                r += w.use_exit
+                p["use_exit"] += w.use_exit
+                s["use_exit"] += 1
 
         # Stuck: barely moved for a while (door that will not open, wall, corner).
         self.trail.append((ps["x"], ps["y"]))

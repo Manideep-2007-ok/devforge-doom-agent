@@ -327,7 +327,10 @@ def make_layout(tier: int, rng: random.Random) -> tuple[Layout, dict]:
 
 
 # ===================================================================== UDMF (after Atharva's build_textmap)
-def build_textmap(L: Layout, rng: random.Random) -> bytes:
+SWITCH_EXIT = False  # --switch-exit: the exit is an exit SWITCH on the exit tile's wall (press USE), like real Doom levels
+
+
+def build_textmap(L: Layout, rng: random.Random, info: dict | None = None) -> bytes:
     wall_tex = rng.choice(WALL_TEX)
     ceil_h = rng.choice([128, 160, 192])
     light = rng.choice([144, 160, 192, 224])
@@ -356,9 +359,14 @@ def build_textmap(L: Layout, rng: random.Random) -> bytes:
         return add("sidedef", f'sector = {sectors[sec]}; texturemiddle = "{mid}"; texturetop = "{top}"; texturebottom = "-";')
 
     tiles = [(x, y) for y in range(L.h) for x in range(L.w) if L[(x, y)] != WALL]
+    # Switch exit only if the exit tile touches a wall to put the switch on; otherwise a floor exit.
+    switch = SWITCH_EXIT and any(L[(x + dx, y + dy)] == WALL for (x, y) in tiles if L[(x, y)] == EXIT
+                                 for dx, dy in ((0, 1), (1, 0), (0, -1), (-1, 0)))
+    if info is not None:
+        info["exit_kind"] = "switch" if switch else "floor"
     for sec in dict.fromkeys(sector_of(p) for p in tiles):
         is_door = isinstance(sec, tuple)
-        floor_tex = "GATE3" if sec == EXIT else "FLOOR0_1"
+        floor_tex = "GATE3" if sec == EXIT and not switch else "FLOOR0_1"
         sectors[sec] = add("sector", f"heightfloor = 0; heightceiling = {0 if is_door else ceil_h}; "
                                      f'texturefloor = "{floor_tex}"; textureceiling = "CEIL1_1"; lightlevel = {light};')
 
@@ -380,7 +388,11 @@ def build_textmap(L: Layout, rng: random.Random) -> bytes:
             seen.add(edge)
             special = ""
             if back is None:
-                sides = f'sidefront = {side(front, mid=wall_tex)}; blocking = true;'
+                if switch and front == EXIT:  # 243 = Exit_Normal, pressed with USE on the switch texture
+                    sides = 'sidefront = %d; blocking = true;' % side(front, mid="SW1EXIT")
+                    special = "special = 243; playeruse = true;"
+                else:
+                    sides = f'sidefront = {side(front, mid=wall_tex)}; blocking = true;'
             else:
                 if isinstance(front, tuple) or front == EXIT:
                     front, back, a, b = back, front, b, a
@@ -391,7 +403,7 @@ def build_textmap(L: Layout, rng: random.Random) -> bytes:
                     special = (f"special = {13 if lock else 12}; arg1 = 16; arg2 = 150; arg3 = {lock}; "
                                "playeruse = true; repeatspecial = true;")
                     top = "DOORRED" if c == "R" else "DOORBLU" if c == "B" else "DOORYEL" if c == "Y" else "BIGDOOR2"
-                elif back == EXIT:
+                elif back == EXIT and not switch:
                     special = "special = 243; playercross = true;"  # 243 = Exit_Normal
                     top = "-"
                 else:
@@ -414,7 +426,7 @@ def ascii_art(L: Layout) -> str:
 
 def write_map(path: Path, L: Layout, info: dict, rng: random.Random) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_wad(path, [Lump("MAP01", b""), Lump("TEXTMAP", build_textmap(L, rng)), Lump("ENDMAP", b"")])
+    write_wad(path, [Lump("MAP01", b""), Lump("TEXTMAP", build_textmap(L, rng, info)), Lump("ENDMAP", b"")])
     path.with_suffix(".json").write_text(json.dumps(info))
 
 
@@ -442,7 +454,10 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--check", action="store_true", help="load every map in ViZDoom (slower)")
     ap.add_argument("--show", action="store_true", help="print each layout as ASCII")
+    ap.add_argument("--switch-exit", action="store_true", help="exit switch on a wall (press USE) instead of a floor exit")
     args = ap.parse_args()
+    global SWITCH_EXIT
+    SWITCH_EXIT = args.switch_exit
     out = Path(args.out)
     for tier in [int(t) for t in args.tiers.split(",")]:
         for i in range(args.per_tier):
@@ -454,7 +469,7 @@ def main() -> None:
             write_map(path, L, info, rng)
             msg = check_map(path, info) if args.check else ""
             print(f"{path}  rooms {info['rooms']} keys {info['keys']} monsters {info['monsters']} "
-                  f"exit {info['exit_steps']} tiles away  {msg}", flush=True)
+                  f"exit {info['exit_steps']} tiles away ({info.get('exit_kind')})  {msg}", flush=True)
             if args.show:
                 print(ascii_art(L) + "\n")
 

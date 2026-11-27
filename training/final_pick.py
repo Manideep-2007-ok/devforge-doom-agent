@@ -1,4 +1,4 @@
-"""Pick the brain to submit, judged on FOUR test sets instead of one.
+"""Pick the brain to submit, judged on FIVE test sets instead of one.
 
     .venv/bin/python training/final_pick.py --baseline runs/submitted_before_finale.pt --run runs/run2/ckpt
 
@@ -7,6 +7,7 @@ Every candidate and the baseline (the brain on GitHub) play the same games on:
 
     heldout  : our 20 held-out maps x 3 games
     fresh    : 20 freshly generated maps (seed 4242) x 2 games
+    switch   : 10 generated maps whose exit is a wall SWITCH (press USE), seed 4343, x 2 games
     freedoom : the 19 Freedoom levels that ship with ViZDoom, 2 minutes each
     packs    : Scythe + 1024:ABC MAP01-10 (community maps from the idgames archive), 2 minutes each
 
@@ -39,6 +40,7 @@ def test_sets() -> dict[str, dict]:
     return {
         "heldout": dict(maps=sorted(glob.glob(str(ROOT / "maps/gen/heldout/*/*.wad"))), seeds=3, ticks=0),
         "fresh": dict(maps=sorted(glob.glob(str(ROOT / "maps/gen/fresh_test/*/*.wad"))), seeds=2, ticks=0),
+        "switch": dict(maps=sorted(glob.glob(str(ROOT / "maps/gen/switch_test/*/*.wad"))), seeds=2, ticks=0),
         "freedoom": dict(maps=outside_maps(), seeds=1, ticks=4200),
         "packs": dict(maps=packs, seeds=1, ticks=4200),
     }
