@@ -232,7 +232,7 @@ uv run python training/mapgen.py --out maps/gen/train2   --per-tier 1200 --tiers
 uv run python training/mapgen.py --out maps/gen/train_sw --per-tier 300  --seed 21 --switch-exit   # once per tier
 ```
 
-Run 1 also used 4 hand-built curriculum maps (`maps/curriculum/train`), which are not in this repository.
+Run 1 also used 4 hand-built curriculum maps (`maps/curriculum/train`, made by `training/build_curriculum.py`).
 
 **Run 1:** rays, visible things and body only, without `--plr`, on 304 maps. It stopped at 38.0M steps.
 
@@ -250,7 +250,7 @@ uv run --group train python training/ppo.py --name run2 --maps "maps/gen/train/*
     --total-steps 50e6 --lr 1e-4 --lr-end 5e-5 --ent-coef 0.005 --ent-end 0.001
 ```
 
-It started on `maps/gen/train` (754 maps). From 18.2M steps it resumed on a weighted mix of `train`, `train2`
+It started on `maps/gen/train` (754 maps). From 18.2M steps it resumed with `--maps @training/run2_maps.txt`, a weighted mix of `train`, `train2`
 and `train_sw` (10,804 maps), with harder tiers picked more often, up to 6× for switch-exit tier 4. We stopped
 it at 49.0M steps and exported the 37.0M save (`ckpt_00037048k.pt`) with `training/export.py`. `validate.py` passes.
 
