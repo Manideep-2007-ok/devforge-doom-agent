@@ -49,6 +49,9 @@ class RewardWeights:
     wrong_door_range: float = 112.0
     use_door: float = 0.05  # pressing USE while a closed door is right in front (doors open only with USE
     use_door_range: float = 80.0  #   and shut again after ~4 s); max once per 12 steps, 8 times per game
+    find_attacker: float = 0.15  # hurt with no enemy in view, then an enemy comes into view within 12 steps
+    find_attacker_steps: int = 12  #   (turn round to face what is shooting you from behind)
+    chaingunner_kill: float = 1.0  # extra on top of `kill` when a chaingunner dies (3x a normal kill)
     stuck: float = -0.01  # per step after moving less than 32 units in the last 24 steps (pinned at a door, a wall)
     stuck_steps: int = 24
     stuck_dist: float = 32.0
@@ -71,13 +74,14 @@ class RewardTracker:
         self.door_phi, self.door_target = None, None
         self.trail = []
         self.length_now, self.last_use = 0, -100
+        self.enemy_in_view, self.hurt_unseen, self.cg_n = False, 0, None
         self.opened: set[int] = set()
         self.kills = ps["kills"]
         self.damage = ps["damage_taken"]
         self.health = ps["health"]
         self.keys = np.asarray(ps["keys"]).copy()
-        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0, revisits=0, close=0, exit_d=-1.0, dodge=0, exposed=0, chaingun=0, wrong_door=0, stuck=0, use_door=0)
-        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0, exit_pull=0.0, dodge=0.0, door_pull=0.0, exposed=0.0, wrong_door=0.0, stuck=0.0, use_door=0.0)
+        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0, revisits=0, close=0, exit_d=-1.0, dodge=0, exposed=0, chaingun=0, wrong_door=0, stuck=0, use_door=0, found=0, cg_kills=0)
+        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0, exit_pull=0.0, dodge=0.0, door_pull=0.0, exposed=0.0, wrong_door=0.0, stuck=0.0, use_door=0.0, found=0.0, cg_kill=0.0)
 
     def shot(self, obs: dict, fired: bool) -> float:
         """Small cost for pulling the trigger when no enemy is roughly straight ahead."""
@@ -126,6 +130,20 @@ class RewardTracker:
                 self.parts["use_door"] += self.w.use_door
                 self.stats["use_door"] += 1
                 self.last_use = self.length_now
+        self.enemy_in_view = bool(((m > 0) & np.isin(t, ENEMY_TYPES)).any())
+        if self.hurt_unseen > 0:
+            self.hurt_unseen -= 1
+            if self.enemy_in_view:
+                r += self.w.find_attacker
+                self.parts["found"] += self.w.find_attacker
+                self.stats["found"] += 1
+                self.hurt_unseen = 0
+        n = len(chaingunners)
+        if self.cg_n is not None and n < self.cg_n:
+            r += self.w.chaingunner_kill * (self.cg_n - n)
+            self.parts["cg_kill"] += self.w.chaingunner_kill * (self.cg_n - n)
+            self.stats["cg_kills"] += self.cg_n - n
+        self.cg_n = n
         self.length_now += 1
         self.stats["ret"] += r
         return r
@@ -175,6 +193,8 @@ class RewardTracker:
             cost = w.damage * dd * (1.0 + w.damage_low_extra * low)
             r += cost
             p["damage"] += cost
+            if not self.enemy_in_view:
+                self.hurt_unseen = w.find_attacker_steps
         self.damage = ps["damage_taken"]
 
         # Health only goes up by picking something up, so this cannot be farmed. A medkit is worth
