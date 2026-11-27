@@ -49,6 +49,8 @@ class RewardWeights:
     wrong_door_range: float = 112.0
     use_door: float = 0.05  # pressing USE while a closed door is right in front (doors open only with USE
     use_door_range: float = 80.0  #   and shut again after ~4 s); max once per 12 steps, 8 times per game
+    weapon_value: tuple = (0.0, 0.0, 0.0, 1.0, 1.5, 1.5, 1.5, 1.5)  # by weapon slot: pistol 2 < shotgun 3 < chaingun 4
+    weapon_pull: float = 0.002  # per unit closer to the nearest visible weapon, until it holds a chaingun
     use_exit: float = 0.1  # pressing USE within 96 units of the exit (exit SWITCHES need USE); max 5 per game
     use_exit_range: float = 96.0
     find_attacker: float = 0.15  # hurt with no enemy in view, then an enemy comes into view within 12 steps
@@ -78,13 +80,14 @@ class RewardTracker:
         self.length_now, self.last_use = 0, -100
         self.enemy_in_view, self.hurt_unseen, self.cg_n = False, 0, None
         self.used_now = False
+        self.best_weapon, self.weapon_d = 2, None
         self.opened: set[int] = set()
         self.kills = ps["kills"]
         self.damage = ps["damage_taken"]
         self.health = ps["health"]
         self.keys = np.asarray(ps["keys"]).copy()
-        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0, revisits=0, close=0, exit_d=-1.0, dodge=0, exposed=0, chaingun=0, wrong_door=0, stuck=0, use_door=0, found=0, cg_kills=0, use_exit=0)
-        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0, exit_pull=0.0, dodge=0.0, door_pull=0.0, exposed=0.0, wrong_door=0.0, stuck=0.0, use_door=0.0, found=0.0, cg_kill=0.0, use_exit=0.0)
+        self.stats = dict(ret=0.0, kills=0, keys=0, doors=0, locked=0, cells=1, exit=0, death=0, length=0, wasted=0, healed=0.0, revisits=0, close=0, exit_d=-1.0, dodge=0, exposed=0, chaingun=0, wrong_door=0, stuck=0, use_door=0, found=0, cg_kills=0, use_exit=0, weapon=0)
+        self.parts = dict(exit=0.0, key=0.0, door=0.0, cell=0.0, kill=0.0, damage=0.0, death=0.0, time=0.0, waste=0.0, heal=0.0, revisit=0.0, pull=0.0, close=0.0, exit_pull=0.0, dodge=0.0, door_pull=0.0, exposed=0.0, wrong_door=0.0, stuck=0.0, use_door=0.0, found=0.0, cg_kill=0.0, use_exit=0.0, weapon=0.0)
 
     def shot(self, obs: dict, fired: bool) -> float:
         """Small cost for pulling the trigger when no enemy is roughly straight ahead."""
@@ -134,6 +137,23 @@ class RewardTracker:
                 self.parts["use_door"] += self.w.use_door
                 self.stats["use_door"] += 1
                 self.last_use = self.length_now
+        # Better guns: reward the first time it holds a better weapon (pistol < shotgun < chaingun);
+        # the game switches to a better gun on pickup, so this is "pick it up". Pull toward visible guns.
+        wv = self.w.weapon_value
+        sel = int(round(float(obs["vitals"][2])))
+        if 0 <= sel < len(wv) and sel > self.best_weapon:
+            gain = wv[sel] - wv[min(self.best_weapon, len(wv) - 1)]
+            if gain > 0:
+                r += gain
+                self.parts["weapon"] += gain
+                self.stats["weapon"] += 1
+            self.best_weapon = sel
+        guns = (m > 0) & (t == WEAPON_TYPE)
+        gd = float(d[guns].min()) if guns.any() and self.best_weapon < 4 else None
+        if gd is not None and self.weapon_d is not None:
+            r += self.w.weapon_pull * (self.weapon_d - gd)
+            self.parts["weapon"] += self.w.weapon_pull * (self.weapon_d - gd)
+        self.weapon_d = gd
         self.enemy_in_view = bool(((m > 0) & np.isin(t, ENEMY_TYPES)).any())
         if self.hurt_unseen > 0:
             self.hurt_unseen -= 1
@@ -327,7 +347,8 @@ ENEMY_TYPES = (1, 2, 3)  # enemy_melee, enemy_hitscan, enemy_projectile (doom_en
 KEY_TYPE = 9
 PROJECTILE_TYPE = 4
 RAY_DOOR = 2  # rays hit_type "door" (a normal, closed door)
-HITSCAN_TYPE = 2  # enemy_hitscan: zombieman, shotgunner, chaingunner (their bullets cannot be dodged)  # fireballs, rockets (doom_env.spaces.ENTITY_TYPES)
+HITSCAN_TYPE = 2
+WEAPON_TYPE = 8  # enemy_hitscan: zombieman, shotgunner, chaingunner (their bullets cannot be dodged)  # fireballs, rockets (doom_env.spaces.ENTITY_TYPES)
 AIM_SIN = 0.26  # about 15 degrees either side of straight ahead
 
 
